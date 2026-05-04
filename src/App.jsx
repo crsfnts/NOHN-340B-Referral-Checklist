@@ -127,6 +127,26 @@ const evidenceItems = [
   "Closed-loop coordination checked",
 ];
 
+const progressLabels = [
+  "PCP is NOHN provider",
+  "Visit within 24 months",
+  "Medication reconciled",
+  "Dental exclusion checked",
+  "ED/UC discharge checked",
+  "ED/UC coordination",
+  "Valid referral in Epic",
+  "Referral connection",
+  "Specialty documentation",
+  "Documentation source",
+  "Medication encounter",
+  "Care responsibility",
+  "Closed-loop coordination",
+  "Encounter date",
+  "Final decision",
+];
+
+const sourceOptions = ["Epic", "Referral record", "Consult note", "Progress note", "Shared records", "Other"];
+
 function createAuditNumber() {
   const today = new Date();
   const datePart = today.toISOString().slice(0, 10).replaceAll("-", "");
@@ -152,10 +172,17 @@ function getAuditTags(answers) {
   return [...new Set(Object.values(answers).flatMap((answer) => answer?.tags || []))];
 }
 
+function getAnswerTone(answer) {
+  if (!answer) return "pending";
+  if (answer.tags?.some((tag) => ["PCP_NOT_NOHN", "NO_NOHN_VISIT_24_MONTHS", "DENTAL_EXCLUDED", "ED_UC_NOT_VALID", "NO_DOCUMENTATION"].includes(tag))) return "finding";
+  if (answer.tags?.length) return "review";
+  return "pass";
+}
+
 function getOutcomeTone(finalStep) {
-  if (finalStep === "END_340B_OK") return "good";
-  if (String(finalStep).includes("NOT_ELIGIBLE") || finalStep === "END_NO_DOCUMENTATION") return "stop";
-  return "caution";
+  if (finalStep === "END_340B_OK") return "pass";
+  if (String(finalStep).includes("NOT_ELIGIBLE") || finalStep === "END_NO_DOCUMENTATION") return "finding";
+  return "review";
 }
 
 function buildAuditNote({ finalStep, answers, auditNumber, evidenceComplete }) {
@@ -180,55 +207,13 @@ function cx(...classes) {
   return classes.filter(Boolean).join(" ");
 }
 
-function AppShell({ children }) {
-  return (
-    <main className="min-h-screen bg-[#f6f8f7] text-slate-950">
-      <div className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8">{children}</div>
-    </main>
-  );
-}
-
-function AppHeader({ auditNumber }) {
-  return (
-    <header className="mb-4 border-b border-slate-200 pb-4">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <div className="mb-2 inline-flex items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-teal-800">
-            NOHN referral prescription review
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">340B Internal Audit Checklist</h1>
-          <p className="mt-1 text-sm text-slate-600">Audit Number: <span className="font-semibold text-slate-900">{auditNumber}</span></p>
-        </div>
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-800 lg:max-w-md">
-          {PHI_WARNING}
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function ProgressBar({ step }) {
-  const progress = typeof step === "number" ? Math.round(((step + 1) / steps.length) * 100) : 100;
-  return (
-    <div>
-      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-500">
-        <span>{typeof step === "number" ? `Decision ${step + 1} of ${steps.length}` : "Complete"}</span>
-        <span>{progress}%</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-slate-200">
-        <div className="h-full rounded-full bg-teal-700 transition-all duration-300" style={{ width: `${progress}%` }} />
-      </div>
-    </div>
-  );
-}
-
 function Button({ children, className = "", variant = "default", disabled, onClick }) {
   const styles = {
-    default: "border border-teal-800 bg-teal-800 text-white hover:bg-teal-900",
-    secondary: "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50",
-    outline: "border border-slate-300 bg-transparent text-slate-900 hover:bg-white",
-    ghost: "border border-transparent bg-transparent text-slate-700 hover:bg-slate-100",
-    danger: "border border-red-200 bg-red-50 text-red-700 hover:bg-red-100",
+    default: "border-teal-800 bg-teal-700 text-white shadow-sm hover:bg-teal-800",
+    secondary: "border-slate-300 bg-white text-slate-800 hover:bg-slate-50",
+    ghost: "border-transparent bg-transparent text-slate-700 hover:bg-slate-100",
+    danger: "border-red-200 bg-red-50 text-red-700 hover:bg-red-100",
+    disabled: "border-slate-200 bg-slate-100 text-slate-400",
   };
   return (
     <button
@@ -236,9 +221,9 @@ function Button({ children, className = "", variant = "default", disabled, onCli
       disabled={disabled}
       onClick={onClick}
       className={cx(
+        "inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400",
         styles[variant],
-        className,
-        "inline-flex min-h-10 items-center justify-center rounded-md px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+        className
       )}
     >
       {children}
@@ -246,218 +231,418 @@ function Button({ children, className = "", variant = "default", disabled, onCli
   );
 }
 
-function Textarea({ className = "", value }) {
-  return <textarea className={cx("w-full resize-none rounded-md border border-slate-300 bg-white p-3 text-sm leading-relaxed text-slate-800 outline-none", className)} value={value} readOnly />;
-}
-
-function StatusChip({ children, tone = "neutral" }) {
+function Badge({ children, tone = "neutral", className = "" }) {
   const styles = {
-    neutral: "border-slate-200 bg-slate-50 text-slate-700",
-    good: "border-teal-200 bg-teal-50 text-teal-800",
-    caution: "border-amber-200 bg-amber-50 text-amber-800",
-    stop: "border-red-200 bg-red-50 text-red-800",
+    neutral: "border-slate-200 bg-slate-50 text-slate-600",
+    pass: "border-teal-200 bg-teal-50 text-teal-800",
+    review: "border-amber-200 bg-amber-50 text-amber-700",
+    finding: "border-red-200 bg-red-50 text-red-700",
+    blue: "border-blue-100 bg-blue-50 text-blue-700",
   };
-  return <span className={cx("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold", styles[tone])}>{children}</span>;
+  return <span className={cx("inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold", styles[tone], className)}>{children}</span>;
 }
 
-function EvidenceChecklist({ evidence, onToggle }) {
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Evidence Review</h2>
-        <StatusChip tone={evidence.length === evidenceItems.length ? "good" : "neutral"}>{evidence.length}/{evidenceItems.length}</StatusChip>
-      </div>
-      <div className="grid gap-2">
-        {evidenceItems.map((item) => {
-          const checked = evidence.includes(item);
-          return (
-            <label key={item} className="flex cursor-pointer items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 transition hover:bg-white">
-              <input className="mt-1 h-4 w-4 accent-teal-700" type="checkbox" checked={checked} onChange={() => onToggle(item)} />
-              <span className={checked ? "font-medium text-slate-950" : ""}>{item}</span>
-            </label>
-          );
-        })}
-      </div>
-    </section>
-  );
+function Panel({ children, className = "" }) {
+  return <section className={cx("rounded-lg border border-slate-200 bg-white shadow-sm", className)}>{children}</section>;
 }
 
-function TrailPanel({ answers }) {
-  const entries = Object.entries(answers).sort(([a], [b]) => Number(a) - Number(b));
+function Header({ auditNumber, startedAt, onSaveDraft, onEndAudit, onToggleSettings, copiedAudit, copyAuditNumber }) {
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">Answer Trail</h2>
-      {entries.length === 0 ? (
-        <p className="text-sm text-slate-500">Selections will appear here as the review progresses.</p>
-      ) : (
-        <ol className="space-y-3">
-          {entries.map(([stepIndex, answer]) => (
-            <li key={stepIndex} className="border-l-2 border-teal-700 pl-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Decision {Number(stepIndex) + 1}</p>
-              <p className="text-sm font-semibold text-slate-950">{answer.label}</p>
-              <p className="mt-1 text-xs leading-relaxed text-slate-600">{answer.note}</p>
-            </li>
-          ))}
-        </ol>
-      )}
-    </section>
-  );
-}
-
-function TagPanel({ tags }) {
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">Findings</h2>
-      {tags.length === 0 ? (
-        <p className="text-sm text-slate-500">No exception findings recorded.</p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => <StatusChip key={tag} tone="caution">{tagLabels[tag] || tag}</StatusChip>)}
+    <header className="border-b border-slate-200 px-7 py-4">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <div className="mb-2 inline-flex rounded-md border border-teal-300 bg-teal-50 px-3 py-1 text-sm font-bold uppercase tracking-wide text-teal-800">
+            NOHN Referral Prescription Review
+          </div>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-950">340B Internal Audit Checklist</h1>
+          <div className="mt-3 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm text-slate-600">
+            <span>Audit Number: <strong className="text-slate-950">{auditNumber}</strong></span>
+            <button type="button" className="rounded border border-slate-200 px-1.5 py-0.5 text-slate-500 hover:bg-slate-50" onClick={copyAuditNumber}>{copiedAudit ? "Copied" : "Copy"}</button>
+            <span>Started: <strong className="font-medium text-slate-700">{startedAt}</strong></span>
+          </div>
         </div>
-      )}
-    </section>
+        <div className="flex flex-col items-stretch gap-3 sm:flex-row xl:items-start">
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold leading-snug text-red-700 sm:w-[390px]">
+            <span className="mr-2 text-lg">!</span>{PHI_WARNING}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={onSaveDraft}>Save Draft</Button>
+            <Button variant="secondary" onClick={onToggleSettings}>Audit Settings</Button>
+            <Button onClick={onEndAudit}>End Audit</Button>
+          </div>
+        </div>
+      </div>
+    </header>
   );
 }
 
-function SavedAuditPanel({ audits, openAuditNumber, setOpenAuditNumber, removeAudit, copyText }) {
-  const [query, setQuery] = useState("");
-  const [outcomeFilter, setOutcomeFilter] = useState("All");
-  const [copiedAudit, setCopiedAudit] = useState(null);
-
-  const filteredAudits = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return Object.values(audits)
-      .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
-      .filter((audit) => {
-        const matchesQuery = !normalized || [audit.auditNumber, audit.outcome, ...(audit.tags || []).map((tag) => tagLabels[tag] || tag)].join(" ").toLowerCase().includes(normalized);
-        const matchesOutcome = outcomeFilter === "All" || audit.outcome === outcomeFilter;
-        return matchesQuery && matchesOutcome;
-      });
-  }, [audits, outcomeFilter, query]);
-
-  const outcomeOptions = ["All", ...new Set(Object.values(audits).map((audit) => audit.outcome).filter(Boolean))];
-
+function Sidebar({ step, answers, jumpToStep }) {
+  const completed = Object.keys(answers).length;
+  const progress = Math.round((completed / steps.length) * 100);
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-600">Saved Audits</h2>
-        <StatusChip>{Object.keys(audits).length}</StatusChip>
+    <Panel className="p-4">
+      <div className="mb-4 flex items-center justify-between text-sm font-bold uppercase tracking-wide text-slate-600">
+        <span>Audit Progress</span>
+        <span>{completed} of {steps.length}</span>
       </div>
-      <div className="grid gap-2 sm:grid-cols-[1fr_auto] lg:grid-cols-1 xl:grid-cols-[1fr_auto]">
-        <input
-          className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
-          placeholder="Search audit, outcome, or finding"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <select
-          className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
-          value={outcomeFilter}
-          onChange={(event) => setOutcomeFilter(event.target.value)}
-        >
-          {outcomeOptions.map((option) => <option key={option}>{option}</option>)}
-        </select>
+      <div className="mb-4 h-2 overflow-hidden rounded-full bg-slate-200">
+        <div className="h-full rounded-full bg-teal-700 transition-all" style={{ width: `${progress}%` }} />
       </div>
-      <div className="mt-4 space-y-3">
-        {filteredAudits.length === 0 ? (
-          <p className="text-sm text-slate-500">No matching saved audits.</p>
-        ) : filteredAudits.map((audit) => {
-          const isOpen = openAuditNumber === audit.auditNumber;
+      <div className="space-y-1">
+        {steps.map((_, index) => {
+          const answer = answers[index];
+          const active = step === index;
+          const tone = getAnswerTone(answer);
+          const status = tone === "pending" ? "Pending" : tone === "finding" ? "Finding" : tone === "review" ? "Review" : "Pass";
           return (
-            <article key={audit.auditNumber} className="rounded-lg border border-slate-200 bg-slate-50">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
-                onClick={() => {
-                  setOpenAuditNumber(isOpen ? null : audit.auditNumber);
-                  setCopiedAudit(null);
-                }}
-              >
-                <span>
-                  <span className="block text-sm font-semibold text-slate-950">{audit.auditNumber}</span>
-                  <span className="mt-1 block text-xs text-slate-500">{new Date(audit.savedAt).toLocaleString()}</span>
-                </span>
-                <StatusChip tone={getOutcomeTone(audit.finalCode)}>{audit.outcome}</StatusChip>
-              </button>
-              {isOpen && (
-                <div className="border-t border-slate-200 p-3">
-                  {audit.tags?.length > 0 && (
-                    <div className="mb-3 flex flex-wrap gap-2">
-                      {audit.tags.map((tag) => <StatusChip key={tag} tone="caution">{tagLabels[tag] || tag}</StatusChip>)}
-                    </div>
-                  )}
-                  <Textarea className="mb-3 min-h-48 bg-white" value={audit.note} />
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <Button onClick={() => copyText(audit.note, (value) => setCopiedAudit(value ? audit.auditNumber : null))}>
-                      {copiedAudit === audit.auditNumber ? "Copied" : "Copy Note"}
-                    </Button>
-                    <Button variant="danger" onClick={() => removeAudit(audit.auditNumber)}>Delete</Button>
-                  </div>
-                </div>
+            <button
+              key={progressLabels[index]}
+              type="button"
+              onClick={() => jumpToStep(index)}
+              className={cx(
+                "flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition",
+                active ? "bg-teal-50 text-teal-950" : "text-slate-600 hover:bg-slate-50"
               )}
-            </article>
+            >
+              <span className={cx(
+                "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-xs font-bold",
+                active ? "border-teal-700 bg-teal-700 text-white" : "border-slate-300 bg-white text-slate-500"
+              )}>{index + 1}</span>
+              <span className="min-w-0 flex-1 truncate">{progressLabels[index]}</span>
+              <Badge tone={tone === "pending" ? "neutral" : tone}>{status}</Badge>
+            </button>
           );
         })}
       </div>
-    </section>
+      <select
+        className="mt-6 min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 outline-none"
+        value={typeof step === "number" ? step : ""}
+        onChange={(event) => jumpToStep(Number(event.target.value))}
+      >
+        <option value="" disabled>Jump to Decision</option>
+        {steps.map((_, index) => <option key={index} value={index}>Decision {index + 1}</option>)}
+      </select>
+    </Panel>
   );
 }
 
-function DecisionQuestion({ currentStep, showInfo, setShowInfo }) {
+function MetricCards({ step, answers, evidenceComplete, tags }) {
+  const decisionCount = Object.keys(answers).length + (typeof step === "string" ? 1 : 0);
+  const percent = Math.round((decisionCount / steps.length) * 100);
+  const status = typeof step === "string" ? outcomes[step] : "In Progress";
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-teal-800">Active Decision</p>
-      <h2 className="text-xl font-semibold leading-snug text-slate-950 sm:text-2xl">
-        {currentStep.highlightWord
-          ? currentStep.question.split(currentStep.highlightWord).map((part, index, array) => (
-            <span key={`${part}-${index}`}>
-              {part}
-              {index < array.length - 1 && (
-                <button
-                  type="button"
-                  className="font-semibold text-teal-800 underline decoration-dotted underline-offset-4 transition hover:text-teal-950"
-                  onClick={() => setShowInfo((prev) => !prev)}
-                >
-                  {currentStep.highlightWord}
-                </button>
-              )}
-            </span>
-          ))
-          : currentStep.question}
-      </h2>
-      {showInfo && currentStep.info && <p className="mt-4 rounded-md border border-teal-200 bg-teal-50 p-3 text-sm leading-relaxed text-teal-950">{currentStep.info}</p>}
+    <div className="grid gap-3 md:grid-cols-4">
+      <Panel className="p-4">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Decisions</p>
+        <p className="mt-2 text-2xl font-bold text-slate-950">{decisionCount} / {steps.length}</p>
+        <p className="text-sm text-slate-600">{percent}% complete</p>
+      </Panel>
+      <Panel className="p-4">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Evidence</p>
+        <p className="mt-2 text-2xl font-bold text-slate-950">{evidenceComplete.length} / {evidenceItems.length}</p>
+        <p className="text-sm text-slate-600">{Math.round((evidenceComplete.length / evidenceItems.length) * 100)}% complete</p>
+      </Panel>
+      <Panel className="p-4">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Findings</p>
+        <p className="mt-2 text-2xl font-bold text-slate-950">{tags.length}</p>
+        <p className="text-sm text-slate-600">{tags.length ? "Requires review" : "No open findings"}</p>
+      </Panel>
+      <Panel className="p-4">
+        <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Overall Status</p>
+        <p className={cx("mt-2 text-xl font-bold", typeof step === "string" ? "text-teal-800" : "text-blue-700")}>{status}</p>
+        <p className="text-sm text-slate-600">{typeof step === "string" ? "Audit finalized" : "Audit not finalized"}</p>
+      </Panel>
     </div>
   );
 }
 
-function ResultPanel({ step, tags, note, copied, saved, onCopy, onSave, onReset, onBack, canGoBack }) {
-  const tone = getOutcomeTone(step);
-  const styles = {
-    good: "border-teal-200 bg-teal-50 text-teal-950",
-    caution: "border-amber-200 bg-amber-50 text-amber-950",
-    stop: "border-red-200 bg-red-50 text-red-950",
-  };
+function DecisionCard({ step, currentStep, selectedOption, setSelectedOption, noteDraft, setNoteDraft, showInfo, setShowInfo, onBack, onContinue, canBack }) {
+  const selectedTags = selectedOption?.tags || [];
+  const noteLength = noteDraft.length;
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <div className={cx("mb-4 rounded-lg border p-4", styles[tone])}>
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wide opacity-75">Final Review Status</p>
-        <h2 className="text-2xl font-semibold tracking-tight">{outcomes[step]}</h2>
-        <p className="mt-2 text-sm leading-relaxed">{notes[step]}</p>
+    <Panel className="p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-teal-800">Decision {step + 1} of {steps.length}</p>
+          <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-950">{currentStep.question}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">
+            {currentStep.info ? "Review the referral guidance before saving this decision." : "Select the answer that matches the documentation found during review."}
+          </p>
+        </div>
+        {currentStep.info && (
+          <button type="button" className="text-sm font-bold text-teal-800 hover:text-teal-950" onClick={() => setShowInfo((value) => !value)}>
+            {showInfo ? "Hide guidance" : "Show guidance"} info
+          </button>
+        )}
       </div>
-      {tags.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          {tags.map((tag) => <StatusChip key={tag} tone="caution">{tagLabels[tag] || tag}</StatusChip>)}
+      {showInfo && currentStep.info && <div className="mb-4 rounded-md border border-teal-200 bg-teal-50 p-3 text-sm leading-relaxed text-teal-950">{currentStep.info}</div>}
+
+      {currentStep.inputType ? (
+        <div className="mb-4 grid gap-3">
+          <label className="text-xs font-bold uppercase tracking-wide text-slate-600">{currentStep.inputLabel}</label>
+          <input
+            className="min-h-11 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
+            type={currentStep.inputType}
+            value={selectedOption?.label || ""}
+            onChange={(event) => setSelectedOption({ label: event.target.value, next: currentStep.next, note: `${currentStep.notePrefix} ${event.target.value}.`, tone: "pass" })}
+          />
+        </div>
+      ) : (
+        <div className="mb-5 grid gap-3 md:grid-cols-3">
+          {currentStep.options.map((option) => {
+            const selected = selectedOption?.label === option.label;
+            const tone = option.tone === "stop" ? "finding" : option.tone === "caution" ? "review" : "pass";
+            const subtext = option.tone === "stop" ? "Stop (Finding)" : option.tone === "caution" ? "Needs Review" : "Pass";
+            return (
+              <button
+                type="button"
+                key={option.label}
+                onClick={() => {
+                  setSelectedOption(option);
+                  setNoteDraft(option.note);
+                }}
+                className={cx(
+                  "min-h-16 rounded-md border bg-white p-4 text-left transition hover:border-teal-500",
+                  selected ? "border-teal-700 shadow-sm ring-1 ring-teal-700" : "border-slate-250"
+                )}
+              >
+                <div className="flex items-start gap-3">
+                  <span className={cx("mt-1 h-4 w-4 rounded-full border", selected ? "border-teal-700 bg-teal-700 shadow-[inset_0_0_0_4px_white]" : "border-slate-400 bg-white")} />
+                  <span>
+                    <span className="block text-sm font-bold text-slate-950">{option.label}</span>
+                    <span className={cx("mt-1 block text-sm font-semibold", tone === "finding" ? "text-red-600" : tone === "review" ? "text-amber-600" : "text-teal-700")}>{subtext}</span>
+                  </span>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
-      <label className="mb-2 block text-sm font-semibold text-slate-700">Generated audit note</label>
-      <Textarea className="min-h-72 bg-slate-50" value={note} />
-      <div className="mt-4 grid gap-2 sm:grid-cols-4">
-        <Button onClick={onCopy}>{copied ? "Copied" : "Copy Note"}</Button>
-        <Button onClick={onSave} variant="secondary">{saved ? "Saved" : "Save Locally"}</Button>
-        <Button onClick={onReset} variant="outline">New Audit</Button>
-        <Button onClick={onBack} variant="ghost" disabled={!canGoBack}>Back</Button>
+
+      <label className="mb-2 block text-xs font-bold uppercase tracking-wide text-slate-600">Reason / Note (Recommended)</label>
+      <div className="relative">
+        <textarea
+          className="min-h-20 w-full resize-none rounded-md border border-slate-300 bg-white p-3 text-sm leading-relaxed text-slate-800 outline-none focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
+          maxLength={500}
+          value={noteDraft}
+          onChange={(event) => setNoteDraft(event.target.value)}
+          placeholder="Document the reason for this answer without patient identifiers."
+        />
+        <div className="absolute bottom-2 right-3 flex items-center gap-4 text-xs text-slate-500">
+          {noteDraft && <span className="font-semibold text-teal-700">Saved</span>}
+          <span>{noteLength} / 500</span>
+        </div>
       </div>
-    </section>
+
+      <div className="mt-4 flex flex-col gap-3 border-t border-slate-200 pt-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Evidence Summary For This Decision</p>
+          <p className="mt-1 text-sm text-slate-600">{selectedTags.length ? selectedTags.map((tag) => tagLabels[tag] || tag).join(", ") : "No exception finding selected for this decision."}</p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={onBack} disabled={!canBack}>Back</Button>
+          <Button onClick={onContinue} disabled={!selectedOption}>Save & Continue</Button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function DecisionHistory({ answers, step }) {
+  const rows = [...Array(Math.max(typeof step === "number" ? step + 1 : Object.keys(answers).length, Object.keys(answers).length))]
+    .map((_, index) => ({ index, answer: answers[index] }))
+    .filter((row) => row.index < steps.length);
+  return (
+    <Panel className="overflow-hidden">
+      <div className="border-b border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-600">Decision History</div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[700px] text-left text-sm">
+          <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-2">#</th>
+              <th className="px-4 py-2">Decision</th>
+              <th className="px-4 py-2">Your Answer</th>
+              <th className="px-4 py-2">Status</th>
+              <th className="px-4 py-2">Note</th>
+              <th className="px-4 py-2">Date</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200 text-slate-600">
+            {rows.map(({ index, answer }) => {
+              const tone = getAnswerTone(answer);
+              return (
+                <tr key={index}>
+                  <td className="px-4 py-2">{index + 1}</td>
+                  <td className="px-4 py-2">{progressLabels[index]}</td>
+                  <td className="px-4 py-2 font-semibold text-slate-800">{answer?.label || "--"}</td>
+                  <td className="px-4 py-2"><Badge tone={tone === "pending" ? "neutral" : tone}>{tone === "pending" ? "Pending" : tone === "finding" ? "Finding" : tone === "review" ? "Review" : "Pass"}</Badge></td>
+                  <td className="max-w-[280px] truncate px-4 py-2">{answer?.note || "--"}</td>
+                  <td className="px-4 py-2">{answer?.savedAt || "--"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function EvidenceReview({ evidenceDetails, setEvidenceDetails, openEvidence, setOpenEvidence }) {
+  const verified = evidenceItems.filter((item) => evidenceDetails[item]?.verified).length;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const updateItem = (item, patch) => {
+    setEvidenceDetails((prev) => ({
+      ...prev,
+      [item]: {
+        source: "Epic",
+        date: today,
+        note: "",
+        verified: false,
+        ...prev[item],
+        ...patch,
+      },
+    }));
+  };
+
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <h2 className="text-sm font-bold uppercase tracking-wide text-slate-600">Evidence Review <Badge className="ml-2">{verified} / {evidenceItems.length}</Badge></h2>
+        <button type="button" className="text-xs font-bold text-teal-800" onClick={() => setOpenEvidence(openEvidence ? null : evidenceItems[0])}>Expand All</button>
+      </div>
+      <div className="divide-y divide-slate-200">
+        {evidenceItems.map((item, index) => {
+          const details = evidenceDetails[item] || { source: "Epic", date: today, note: "", verified: false };
+          const open = openEvidence === item;
+          return (
+            <div key={item}>
+              <button type="button" className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-semibold text-slate-800" onClick={() => setOpenEvidence(open ? null : item)}>
+                <input className="h-4 w-4 accent-teal-700" type="checkbox" checked={details.verified} onChange={(event) => updateItem(item, { verified: event.target.checked })} onClick={(event) => event.stopPropagation()} />
+                <span className="flex-1">{item}</span>
+                <span className="text-slate-500">{open ? "^" : "v"}</span>
+              </button>
+              {open && (
+                <div className="px-4 pb-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="grid gap-1 text-xs font-bold text-slate-600">
+                      Source
+                      <select className="min-h-9 rounded-md border border-slate-300 bg-white px-2 text-sm font-medium text-slate-700" value={details.source} onChange={(event) => updateItem(item, { source: event.target.value })}>
+                        {sourceOptions.map((source) => <option key={source}>{source}</option>)}
+                      </select>
+                    </label>
+                    <label className="grid gap-1 text-xs font-bold text-slate-600">
+                      Date verified
+                      <input className="min-h-9 rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-700" type="date" value={details.date} onChange={(event) => updateItem(item, { date: event.target.value })} />
+                    </label>
+                  </div>
+                  <label className="mt-3 grid gap-1 text-xs font-bold text-slate-600">
+                    Note (optional)
+                    <textarea className="min-h-16 resize-none rounded-md border border-slate-300 bg-white p-2 text-sm font-normal text-slate-700" maxLength={250} value={details.note} onChange={(event) => updateItem(item, { note: event.target.value })} />
+                  </label>
+                  {details.verified && <p className="mt-2 text-xs font-semibold text-teal-700">Verified</p>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function FindingsPanel({ tags }) {
+  const firstTag = tags[0];
+  return (
+    <Panel className="p-4">
+      <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-600">Findings <Badge tone={tags.length ? "finding" : "neutral"} className="ml-2">{tags.length}</Badge></h2>
+      {tags.length === 0 ? (
+        <p className="text-sm text-slate-500">No findings have been recorded.</p>
+      ) : (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3">
+          <div className="mb-2 flex items-center gap-2 text-sm font-bold text-red-700">
+            <span className="h-2 w-2 rounded-full bg-red-600" />
+            Finding #1
+            <Badge tone="pass">New</Badge>
+          </div>
+          <p className="text-sm text-slate-700">{tagLabels[firstTag] || firstTag}</p>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="grid gap-1 text-xs font-bold text-slate-600">
+              Status
+              <select className="min-h-9 rounded-md border border-slate-300 bg-white px-2 text-sm font-medium text-slate-700">
+                <option>Unresolved</option>
+                <option>Resolved</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-bold text-slate-600">
+              Required Action
+              <textarea className="min-h-14 resize-none rounded-md border border-slate-300 bg-white p-2 text-sm font-normal text-slate-700" defaultValue="Verify documentation or document exception with leadership approval." />
+            </label>
+          </div>
+          {tags.length > 1 && <p className="mt-3 text-xs font-semibold text-teal-800">View all findings</p>}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function SummaryPanel({ finalStep, note, copied, onCopy, onFinalize }) {
+  return (
+    <Panel className="p-4">
+      <h2 className="text-sm font-bold uppercase tracking-wide text-slate-600">Audit Summary & Export</h2>
+      <p className="mt-1 text-xs text-slate-500">{finalStep ? "Audit summary is ready." : "Finalize the audit to generate a summary report."}</p>
+      {finalStep && <textarea className="mt-3 min-h-32 w-full resize-none rounded-md border border-slate-300 bg-slate-50 p-2 text-xs text-slate-700" value={note} readOnly />}
+      <div className="mt-3 grid gap-2">
+        <Button variant="secondary" onClick={onCopy}>{copied ? "Copied Summary" : "Preview Summary"}</Button>
+        <Button onClick={onFinalize}>Finalize Audit & Export</Button>
+      </div>
+    </Panel>
+  );
+}
+
+function FooterConfirm({ confirmed, setConfirmed, onConfirmSave }) {
+  return (
+    <div className="mt-4 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 px-6 py-4 text-sm text-blue-900 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex items-start gap-4">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 border-blue-600 text-lg font-bold">✓</div>
+        <div>
+          <p className="font-bold">Before saving or exporting this audit, please confirm:</p>
+          <p>This audit contains no patient names, DOB, MRN, address, phone number, or other identifying information.</p>
+        </div>
+      </div>
+      <label className="flex items-center gap-2 font-semibold">
+        <input className="h-4 w-4 accent-blue-700" type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+        I confirm no PHI was entered.
+      </label>
+      <Button variant={confirmed ? "secondary" : "disabled"} disabled={!confirmed} onClick={onConfirmSave}>Confirm & Save</Button>
+    </div>
+  );
+}
+
+function ResultCard({ finalStep, note, onBack, onNewAudit, onSave }) {
+  const tone = getOutcomeTone(finalStep);
+  const styles = {
+    pass: "border-teal-200 bg-teal-50 text-teal-900",
+    review: "border-amber-200 bg-amber-50 text-amber-900",
+    finding: "border-red-200 bg-red-50 text-red-900",
+  };
+  return (
+    <Panel className="p-5">
+      <div className={cx("rounded-lg border p-4", styles[tone])}>
+        <p className="text-xs font-bold uppercase tracking-wide opacity-75">Final Decision</p>
+        <h2 className="mt-1 text-3xl font-bold">{outcomes[finalStep]}</h2>
+        <p className="mt-2 text-sm">{notes[finalStep]}</p>
+      </div>
+      <textarea className="mt-4 min-h-56 w-full resize-none rounded-md border border-slate-300 bg-slate-50 p-3 text-sm text-slate-700" value={note} readOnly />
+      <div className="mt-4 flex flex-wrap justify-between gap-2">
+        <Button variant="secondary" onClick={onBack}>Back</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={onNewAudit}>New Audit</Button>
+          <Button onClick={onSave}>Save Final Audit</Button>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -466,55 +651,65 @@ export default function AuditChecklist() {
   const [answers, setAnswers] = useState({});
   const [stepHistory, setStepHistory] = useState([]);
   const [auditNumber, setAuditNumber] = useState(createAuditNumber);
-  const [copied, setCopied] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [inputValue, setInputValue] = useState("");
+  const [startedAt] = useState(() => new Date().toLocaleString([], { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }));
+  const [selectedOption, setSelectedOption] = useState(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+  const [evidenceDetails, setEvidenceDetails] = useState(() => Object.fromEntries(evidenceItems.map((item, index) => [item, { verified: index < 3, source: "Epic", date: new Date().toISOString().slice(0, 10), note: "" }])));
+  const [openEvidence, setOpenEvidence] = useState(evidenceItems[0]);
+  const [copiedSummary, setCopiedSummary] = useState(false);
+  const [copiedAudit, setCopiedAudit] = useState(false);
   const [savedAudits, setSavedAudits] = useState(getSavedAudits());
-  const [openAuditNumber, setOpenAuditNumber] = useState(null);
-  const [evidenceComplete, setEvidenceComplete] = useState([]);
+  const [confirmedPhi, setConfirmedPhi] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const currentAuditTags = getAuditTags(answers);
-  const currentAuditNote = buildAuditNote({ finalStep: step, answers, auditNumber, evidenceComplete });
   const currentStep = typeof step === "number" ? steps[step] : null;
-  const currentProgress = typeof step === "number" ? Math.round(((step + 1) / steps.length) * 100) : 100;
+  const tags = getAuditTags(answers);
+  const evidenceComplete = evidenceItems.filter((item) => evidenceDetails[item]?.verified);
+  const auditNote = buildAuditNote({ finalStep: step, answers, auditNumber, evidenceComplete });
 
-  const copyText = async (text, onSuccess) => {
+  const copyText = async (text, setFlag) => {
     try {
       await navigator.clipboard.writeText(text);
-      onSuccess(true);
-      setTimeout(() => onSuccess(false), 1500);
+      setFlag(true);
+      setTimeout(() => setFlag(false), 1500);
     } catch {
-      onSuccess(false);
+      setFlag(false);
     }
   };
 
-  const handleSaveAudit = () => {
-    if (typeof step !== "string") return;
+  const resetStagedDecision = () => {
+    setSelectedOption(null);
+    setNoteDraft("");
+    setShowInfo(false);
+  };
+
+  const saveRecord = (finalCode = step, draft = false) => {
     const record = {
       auditNumber,
       savedAt: new Date().toISOString(),
-      outcome: outcomes[step],
-      finalCode: step,
-      note: currentAuditNote,
+      startedAt,
+      outcome: typeof finalCode === "string" ? outcomes[finalCode] : "Draft",
+      finalCode,
+      note: auditNote,
       answers,
-      tags: currentAuditTags,
+      tags,
       evidenceComplete,
+      draft,
     };
     saveAuditRecord(record);
     setSavedAudits(getSavedAudits());
-    setSaved(true);
   };
 
-  const handleAnswer = (label, next, note) => {
-    const selectedOption = steps[step]?.options?.find((option) => option.label === label);
+  const handleContinue = () => {
+    if (!currentStep || !selectedOption) return;
+    const option = selectedOption;
+    const note = noteDraft.trim() || option.note;
+    const savedAt = new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     setStepHistory((prev) => [...prev, step]);
-    setAnswers((prev) => ({ ...prev, [step]: { label, note, tags: selectedOption?.tags || [] } }));
-    setCopied(false);
-    setSaved(false);
-    setInputValue("");
-    setShowInfo(false);
-    setStep(next);
+    setAnswers((prev) => ({ ...prev, [step]: { label: option.label, note, tags: option.tags || [], savedAt } }));
+    setStep(option.next);
+    resetStagedDecision();
   };
 
   const handleBack = () => {
@@ -526,16 +721,14 @@ export default function AuditChecklist() {
       delete updated[previousStep];
       return updated;
     });
-    setCopied(false);
-    setSaved(false);
-    setInputValue("");
-    setShowInfo(false);
     setStep(previousStep);
+    resetStagedDecision();
   };
 
-  const handleInputSubmit = () => {
-    if (!currentStep || !inputValue.trim()) return;
-    handleAnswer(inputValue, currentStep.next, `${currentStep.notePrefix} ${inputValue}.`);
+  const jumpToStep = (index) => {
+    if (index > Object.keys(answers).length) return;
+    setStep(index);
+    resetStagedDecision();
   };
 
   const reset = () => {
@@ -543,119 +736,65 @@ export default function AuditChecklist() {
     setAnswers({});
     setStepHistory([]);
     setAuditNumber(createAuditNumber());
-    setCopied(false);
-    setSaved(false);
-    setInputValue("");
-    setShowInfo(false);
-    setEvidenceComplete([]);
-  };
-
-  const toggleEvidence = (item) => {
-    setEvidenceComplete((prev) => prev.includes(item) ? prev.filter((value) => value !== item) : [...prev, item]);
-    setSaved(false);
-  };
-
-  const removeAudit = (auditNumberToRemove) => {
-    const updated = { ...savedAudits };
-    delete updated[auditNumberToRemove];
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    setSavedAudits(updated);
-    if (openAuditNumber === auditNumberToRemove) setOpenAuditNumber(null);
+    resetStagedDecision();
+    setConfirmedPhi(false);
   };
 
   return (
-    <AppShell>
-      <AppHeader auditNumber={auditNumber} />
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="space-y-4">
-          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <ProgressBar step={step} />
-            <div className="mt-4 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Progress</p>
-                <p className="mt-1 text-2xl font-semibold text-slate-950">{currentProgress}%</p>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Findings</p>
-                <p className="mt-1 text-2xl font-semibold text-slate-950">{currentAuditTags.length}</p>
-              </div>
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Evidence</p>
-                <p className="mt-1 text-2xl font-semibold text-slate-950">{evidenceComplete.length}/{evidenceItems.length}</p>
-              </div>
+    <main className="min-h-screen bg-[#f8fafc] text-slate-950">
+      <Header
+        auditNumber={auditNumber}
+        startedAt={startedAt}
+        onSaveDraft={() => saveRecord(step, true)}
+        onEndAudit={() => typeof step === "number" ? setStep("END_RECHECK_CLOSED_LOOP") : saveRecord(step)}
+        onToggleSettings={() => setSettingsOpen((value) => !value)}
+        copiedAudit={copiedAudit}
+        copyAuditNumber={() => copyText(auditNumber, setCopiedAudit)}
+      />
+      <div className="p-5">
+        {settingsOpen && (
+          <Panel className="mb-4 p-4">
+            <h2 className="text-sm font-bold uppercase tracking-wide text-slate-600">Audit Settings</h2>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" defaultChecked className="accent-teal-700" /> Require PHI confirmation</label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" defaultChecked className="accent-teal-700" /> Include evidence in summary</label>
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" className="accent-teal-700" /> Compact history table</label>
             </div>
-          </section>
+          </Panel>
+        )}
 
-          {typeof step === "string" ? (
-            <ResultPanel
-              step={step}
-              tags={currentAuditTags}
-              note={currentAuditNote}
-              copied={copied}
-              saved={saved}
-              onCopy={() => copyText(currentAuditNote, setCopied)}
-              onSave={handleSaveAudit}
-              onReset={reset}
-              onBack={handleBack}
-              canGoBack={stepHistory.length > 0}
-            />
-          ) : (
-            <>
-              <DecisionQuestion currentStep={currentStep} showInfo={showInfo} setShowInfo={setShowInfo} />
-              <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-                {currentStep.inputType ? (
-                  <div className="grid gap-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-semibold text-slate-700">{currentStep.inputLabel}</label>
-                      <input
-                        className="min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-100"
-                        type={currentStep.inputType}
-                        value={inputValue}
-                        onChange={(event) => setInputValue(event.target.value)}
-                      />
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <Button onClick={handleInputSubmit} disabled={!inputValue.trim()}>Continue</Button>
-                      <Button variant="outline" onClick={handleBack} disabled={!stepHistory.length}>Back</Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid gap-2">
-                    {currentStep.options.map((option) => (
-                      <button
-                        type="button"
-                        key={option.label}
-                        onClick={() => handleAnswer(option.label, option.next, option.note)}
-                        className="group flex min-h-14 items-center justify-between gap-3 rounded-md border border-slate-300 bg-white px-4 py-3 text-left transition hover:border-teal-700 hover:bg-teal-50 focus:outline-none focus:ring-2 focus:ring-teal-100"
-                      >
-                        <span>
-                          <span className="block text-sm font-semibold text-slate-950">{option.label}</span>
-                          {option.tags?.length > 0 && <span className="mt-1 block text-xs text-slate-500">{option.tags.map((tag) => tagLabels[tag] || tag).join(", ")}</span>}
-                        </span>
-                        <StatusChip tone={option.tone || "neutral"}>{option.tone === "stop" ? "Stop" : option.tone === "caution" ? "Review" : "Pass"}</StatusChip>
-                      </button>
-                    ))}
-                    <Button className="mt-1" variant="outline" onClick={handleBack} disabled={!stepHistory.length}>Back</Button>
-                  </div>
-                )}
-              </section>
-            </>
-          )}
+        <div className="grid gap-5 xl:grid-cols-[250px_minmax(0,1fr)_370px]">
+          <Sidebar step={step} answers={answers} jumpToStep={jumpToStep} />
+          <div className="space-y-4">
+            <MetricCards step={step} answers={answers} evidenceComplete={evidenceComplete} tags={tags} />
+            {typeof step === "string" ? (
+              <ResultCard finalStep={step} note={auditNote} onBack={handleBack} onNewAudit={reset} onSave={() => saveRecord(step)} />
+            ) : (
+              <DecisionCard
+                step={step}
+                currentStep={currentStep}
+                selectedOption={selectedOption}
+                setSelectedOption={setSelectedOption}
+                noteDraft={noteDraft}
+                setNoteDraft={setNoteDraft}
+                showInfo={showInfo}
+                setShowInfo={setShowInfo}
+                onBack={handleBack}
+                onContinue={handleContinue}
+                canBack={stepHistory.length > 0}
+              />
+            )}
+            <DecisionHistory answers={answers} step={step} />
+          </div>
+          <aside className="space-y-4">
+            <EvidenceReview evidenceDetails={evidenceDetails} setEvidenceDetails={setEvidenceDetails} openEvidence={openEvidence} setOpenEvidence={setOpenEvidence} />
+            <FindingsPanel tags={tags} />
+            <SummaryPanel finalStep={typeof step === "string" ? step : null} note={auditNote} copied={copiedSummary} onCopy={() => copyText(auditNote, setCopiedSummary)} onFinalize={() => saveRecord(typeof step === "string" ? step : "END_RECHECK_CLOSED_LOOP")} />
+          </aside>
         </div>
-
-        <aside className="space-y-4">
-          <EvidenceChecklist evidence={evidenceComplete} onToggle={toggleEvidence} />
-          <TagPanel tags={currentAuditTags} />
-          <TrailPanel answers={answers} />
-          <SavedAuditPanel
-            audits={savedAudits}
-            openAuditNumber={openAuditNumber}
-            setOpenAuditNumber={setOpenAuditNumber}
-            removeAudit={removeAudit}
-            copyText={copyText}
-          />
-        </aside>
+        <FooterConfirm confirmed={confirmedPhi} setConfirmed={setConfirmedPhi} onConfirmSave={() => saveRecord(step)} />
+        {Object.keys(savedAudits).length > 0 && <p className="mt-3 text-xs text-slate-500">{Object.keys(savedAudits).length} local audit record(s) available in this browser.</p>}
       </div>
-    </AppShell>
+    </main>
   );
 }
