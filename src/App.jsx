@@ -1,29 +1,32 @@
 import { useEffect, useMemo, useState } from "react";
 
-const STORAGE_KEY = "nohn_340b_saved_audits";
-const STATUS_OPTIONS = {
-  eligible: "Eligible",
-  notEligible: "Not Eligible",
-  followUp: "Needs Follow-up",
-};
-
-const workflowSteps = [
-  "Audit Setup",
-  "PCP Validation",
-  "Medication Validation",
-  "Encounter / Referral Validation",
-  "Review & Save",
+const STORAGE_KEY = "nohn_340b_saved_audits_v2";
+const SITES = [
+  "NOHN Family Health Center",
+  "NOHN Community Clinic",
+  "NOHN Behavioral Health",
+  "NOHN Dental Clinic",
+  "NOHN Pediatrics",
 ];
 
+const navItems = ["Dashboard", "New Audit", "Audit Workflow", "Saved Audits", "Reports", "Settings"];
+const workflowSteps = ["PCP Validation", "Epic Med List", "Referral Review", "Encounter Check", "Summary"];
+
+const statusStyles = {
+  Completed: "bg-emerald-100 text-emerald-800",
+  Eligible: "bg-teal-100 text-teal-800",
+  "Needs Follow-up": "bg-orange-100 text-orange-800",
+  "In Progress": "bg-blue-100 text-blue-800",
+  "Not Started": "bg-slate-100 text-slate-700",
+};
+
 function createAuditNumber() {
-  const datePart = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  const rand = Math.floor(1000 + Math.random() * 9000);
-  return `AUD-${datePart}-${rand}`;
+  return `AUD-${String(Math.floor(10000 + Math.random() * 89999))}`;
 }
 
 function loadSavedAudits() {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -31,261 +34,155 @@ function loadSavedAudits() {
   }
 }
 
-function persistAudits(audits) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(audits));
+const persistAudits = (audits) => localStorage.setItem(STORAGE_KEY, JSON.stringify(audits));
+
+const StatusBadge = ({ status }) => <span className={`rounded-full px-3 py-1 text-xs font-semibold ${statusStyles[status] || statusStyles["Not Started"]}`}>{status}</span>;
+
+function AppShell({ children, view, setView, search, setSearch }) {
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <div className="grid min-h-screen lg:grid-cols-[240px_1fr]">
+        <aside className="border-r border-slate-200 bg-white p-4">
+          <div className="mb-8 text-2xl font-bold text-blue-900">NOHN</div>
+          <nav className="space-y-2">
+            {navItems.map((item) => (
+              <button key={item} type="button" onClick={() => setView(item)} className={`w-full rounded-xl px-3 py-2 text-left ${view === item ? "bg-blue-50 text-blue-700" : "hover:bg-slate-100"}`}>
+                {item}
+              </button>
+            ))}
+          </nav>
+          <p className="mt-8 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm">Internal Use Only. No PHI is stored or accessed in this application.</p>
+        </aside>
+        <div>
+          <header className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 md:px-6">
+            <h1 className="text-lg font-semibold">NOHN 340B Audit Tool</h1>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search audits / locations / keywords" className="min-w-[220px] flex-1 rounded-xl border border-slate-300 px-3 py-2" />
+            <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">🛡️ No PHI Stored</div>
+            <div className="text-sm text-slate-500">Audit Manager</div>
+          </header>
+          <main className="p-4 md:p-6">{children}</main>
+          <footer className="px-6 pb-6 text-sm text-slate-600">This internal checklist stores audit workflow data only. No PHI Stored.</footer>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function stepStatus(index, currentStep) {
-  if (index === currentStep) return "active";
-  if (index < currentStep) return "done";
-  return "pending";
+function SummaryText({ form, overallStatus }) {
+  return `Audit ${form.auditNumber} (${form.auditTitle || "Untitled"}) is ${overallStatus}. PCP Validation: ${form.pcpIsNohn || "N/A"}. Epic Med List: ${form.epicMedList || "N/A"}. Referral Review: ${form.referralValid || "N/A"}. Encounter Check: ${form.encounterValid || "N/A"}. Follow-up: ${form.epicFollowUp || "None"}.`;
 }
 
-export default function AuditChecklist() {
+export default function App() {
+  const [view, setView] = useState("Dashboard");
+  const [search, setSearch] = useState("");
+  const [savedAudits, setSavedAudits] = useState(() => loadSavedAudits());
+  const [expandedRows, setExpandedRows] = useState({});
   const [step, setStep] = useState(0);
   const [saveMessage, setSaveMessage] = useState("");
-  const [saveError, setSaveError] = useState("");
-  const [savedAudits, setSavedAudits] = useState(() => loadSavedAudits());
-  const [expandedAudit, setExpandedAudit] = useState(null);
-
   const [form, setForm] = useState({
     auditNumber: createAuditNumber(),
     auditTitle: "",
-    setupNotes: "",
+    site: SITES[0],
     pcpIsNohn: "",
-    medicationOnEpicList: "",
-    medicationNotes: "",
-    encounterSupport: "",
+    epicMedList: "",
+    epicFollowUp: "",
+    referralValid: "",
+    referralSource: "",
+    referralType: "",
+    referralDate: "",
+    encounterValid: "",
     encounterDate: "",
-    encounterNotes: "",
   });
 
-  useEffect(() => {
-    setSavedAudits(loadSavedAudits());
-  }, []);
+  useEffect(() => setSavedAudits(loadSavedAudits()), []);
+  const update = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
-  const finalStatus = useMemo(() => {
-    if (form.pcpIsNohn === "no") return STATUS_OPTIONS.notEligible;
-    if (form.medicationOnEpicList === "no" || form.encounterSupport !== "yes") return STATUS_OPTIONS.followUp;
-    return STATUS_OPTIONS.eligible;
+  const overallStatus = useMemo(() => {
+    if ([form.pcpIsNohn, form.epicMedList, form.referralValid, form.encounterValid].every(Boolean)) {
+      if ([form.pcpIsNohn, form.epicMedList, form.referralValid, form.encounterValid].every((v) => v === "Yes")) return "Eligible";
+      return "Needs Follow-up";
+    }
+    return "In Progress";
   }, [form]);
 
-  const answers = useMemo(
-    () => ({
-      pcp_validation: form.pcpIsNohn,
-      medication_validation: form.medicationOnEpicList,
-      encounter_referral_validation: form.encounterSupport,
-      encounter_date: form.encounterDate,
-    }),
-    [form]
-  );
-
-  const updateField = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
-
-  const canContinue = useMemo(() => {
-    if (step === 0) return Boolean(form.auditNumber && form.auditTitle.trim());
-    if (step === 1) return Boolean(form.pcpIsNohn);
-    if (step === 2) return Boolean(form.medicationOnEpicList);
-    if (step === 3) return Boolean(form.encounterSupport);
-    return true;
-  }, [step, form]);
+  const filteredAudits = useMemo(() => savedAudits.filter((a) => `${a.auditNumber} ${a.auditTitle}`.toLowerCase().includes(search.toLowerCase())), [savedAudits, search]);
+  const kpis = useMemo(() => ({
+    total: savedAudits.length,
+    eligible: savedAudits.filter((a) => a.status === "Eligible").length,
+    follow: savedAudits.filter((a) => a.status === "Needs Follow-up").length,
+    completionRate: savedAudits.length ? Math.round((savedAudits.filter((a) => a.status !== "In Progress").length / savedAudits.length) * 100) : 0,
+  }), [savedAudits]);
 
   const saveAudit = () => {
-    setSaveMessage("");
-    setSaveError("");
-
-    try {
-      const nowIso = new Date().toISOString();
-      const nowDisplay = new Date(nowIso).toLocaleString();
-      const record = {
-        id: `${form.auditNumber}-${nowIso}`,
-        auditNumber: form.auditNumber,
-        auditTitle: form.auditTitle.trim(),
-        savedAt: nowIso,
-        savedAtDisplay: nowDisplay,
-        answers,
-        notes: {
-          setupNotes: form.setupNotes,
-          medicationNotes: form.medicationNotes,
-          encounterNotes: form.encounterNotes,
-        },
-        finalStatus,
-      };
-
-      const updated = [record, ...savedAudits];
-      persistAudits(updated);
-      setSavedAudits(updated);
-      setExpandedAudit(record.id);
-      setSaveMessage("Audit saved successfully.");
-    } catch (error) {
-      setSaveError("Unable to save audit. Please try again.");
-      console.error("Save failed", error);
-    }
+    const now = new Date().toISOString();
+    const record = { ...form, id: `${form.auditNumber}-${now}`, createdAt: now, updatedAt: now, status: overallStatus, summary: SummaryText({ form, overallStatus }) };
+    const updated = [record, ...savedAudits];
+    setSavedAudits(updated);
+    persistAudits(updated);
+    setSaveMessage("Audit saved successfully.");
+    setView("Saved Audits");
   };
 
   const deleteAudit = (id) => {
+    if (!window.confirm("Delete this saved audit?")) return;
     const updated = savedAudits.filter((a) => a.id !== id);
-    persistAudits(updated);
     setSavedAudits(updated);
-    if (expandedAudit === id) setExpandedAudit(null);
+    persistAudits(updated);
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 p-4 md:p-6">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <h1 className="text-2xl font-bold text-slate-900">340B Internal Audit Checklist</h1>
-          <p className="mt-2 text-sm text-slate-600">Do not enter PHI. This tool is for audit workflow notes only.</p>
-        </section>
-
-        <section className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
-          <aside className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-600">Workflow Steps</h2>
-            <div className="space-y-2">
-              {workflowSteps.map((name, index) => {
-                const status = stepStatus(index, step);
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    onClick={() => index <= step && setStep(index)}
-                    className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-                      status === "active"
-                        ? "border-teal-700 bg-teal-50 text-teal-900"
-                        : status === "done"
-                          ? "border-slate-200 bg-white text-slate-800"
-                          : "border-slate-100 bg-slate-50 text-slate-400"
-                    }`}
-                  >
-                    <span className="font-semibold">Step {index + 1}:</span> {name}
-                  </button>
-                );
-              })}
-            </div>
-          </aside>
-
-          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-            {step === 0 && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-bold text-slate-900">Step 1: Audit Setup</h3>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                    Audit Number
-                    <input className="rounded-md border border-slate-300 px-3 py-2" value={form.auditNumber} onChange={(e) => updateField("auditNumber", e.target.value)} />
-                  </label>
-                  <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                    Audit Title / Name
-                    <input className="rounded-md border border-slate-300 px-3 py-2" value={form.auditTitle} onChange={(e) => updateField("auditTitle", e.target.value)} />
-                  </label>
-                </div>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">
-                  Basic Audit Notes
-                  <textarea className="min-h-24 rounded-md border border-slate-300 p-3" value={form.setupNotes} onChange={(e) => updateField("setupNotes", e.target.value)} />
-                </label>
-              </div>
-            )}
-
-            {step === 1 && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-bold text-slate-900">Step 2: PCP Validation</h3>
-                <p className="text-sm text-slate-600">Is the PCP a NOHN provider?</p>
-                <div className="flex gap-3">
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.pcpIsNohn === "yes" ? "border-teal-700 bg-teal-50" : "border-slate-300"}`} onClick={() => updateField("pcpIsNohn", "yes")}>Yes</button>
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.pcpIsNohn === "no" ? "border-amber-700 bg-amber-50" : "border-slate-300"}`} onClick={() => updateField("pcpIsNohn", "no")}>No</button>
-                </div>
-                {form.pcpIsNohn === "no" && <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">Marked as not eligible, but continue documenting the audit.</p>}
-              </div>
-            )}
-
-            {step === 2 && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-bold text-slate-900">Step 3: Medication Validation</h3>
-                <p className="text-sm text-slate-600">Is the medication on the Epic med list?</p>
-                <div className="flex gap-3">
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.medicationOnEpicList === "yes" ? "border-teal-700 bg-teal-50" : "border-slate-300"}`} onClick={() => updateField("medicationOnEpicList", "yes")}>Yes</button>
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.medicationOnEpicList === "no" ? "border-amber-700 bg-amber-50" : "border-slate-300"}`} onClick={() => updateField("medicationOnEpicList", "no")}>No</button>
-                </div>
-                {form.medicationOnEpicList === "no" && <p className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">Reminder: Epic med list needs to be updated or reviewed.</p>}
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">Medication Notes
-                  <textarea className="min-h-20 rounded-md border border-slate-300 p-3" value={form.medicationNotes} onChange={(e) => updateField("medicationNotes", e.target.value)} />
-                </label>
-              </div>
-            )}
-
-            {step === 3 && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-bold text-slate-900">Step 4: Encounter / Referral Validation</h3>
-                <p className="text-sm text-slate-600">Is there encounter or referral support documented?</p>
-                <div className="flex gap-3">
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.encounterSupport === "yes" ? "border-teal-700 bg-teal-50" : "border-slate-300"}`} onClick={() => updateField("encounterSupport", "yes")}>Yes</button>
-                  <button type="button" className={`rounded-md border px-4 py-2 ${form.encounterSupport === "no" ? "border-amber-700 bg-amber-50" : "border-slate-300"}`} onClick={() => updateField("encounterSupport", "no")}>No</button>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="grid gap-1 text-sm font-semibold text-slate-700">Encounter Date
-                    <input type="date" className="rounded-md border border-slate-300 px-3 py-2" value={form.encounterDate} onChange={(e) => updateField("encounterDate", e.target.value)} />
-                  </label>
-                </div>
-                <label className="grid gap-1 text-sm font-semibold text-slate-700">Documentation Notes
-                  <textarea className="min-h-20 rounded-md border border-slate-300 p-3" value={form.encounterNotes} onChange={(e) => updateField("encounterNotes", e.target.value)} />
-                </label>
-              </div>
-            )}
-
-            {step === 4 && (
-              <div className="space-y-4">
-                <h3 className="text-lg font-bold text-slate-900">Step 5: Review & Save</h3>
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                  <p><strong>Audit #:</strong> {form.auditNumber}</p>
-                  <p><strong>Title:</strong> {form.auditTitle || "—"}</p>
-                  <p><strong>PCP a NOHN provider:</strong> {form.pcpIsNohn || "—"}</p>
-                  <p><strong>Medication on Epic list:</strong> {form.medicationOnEpicList || "—"}</p>
-                  <p><strong>Encounter/Referral support:</strong> {form.encounterSupport || "—"}</p>
-                  <p><strong>Encounter date:</strong> {form.encounterDate || "—"}</p>
-                  <p className="mt-2"><strong>Final Status:</strong> {finalStatus}</p>
-                </div>
-                <button type="button" onClick={saveAudit} className="rounded-md bg-teal-700 px-4 py-2 font-semibold text-white hover:bg-teal-800">Save Audit</button>
-                {saveMessage && <p className="text-sm font-semibold text-teal-700">{saveMessage}</p>}
-                {saveError && <p className="text-sm font-semibold text-red-700">{saveError}</p>}
-              </div>
-            )}
-
-            <div className="mt-6 flex justify-between border-t border-slate-200 pt-4">
-              <button type="button" className="rounded-md border border-slate-300 px-3 py-2 text-sm" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>Back</button>
-              <button type="button" className="rounded-md border border-slate-300 px-3 py-2 text-sm" onClick={() => setStep((s) => Math.min(4, s + 1))} disabled={step === 4 || !canContinue}>Continue</button>
-            </div>
-          </section>
-        </section>
-
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="mb-3 text-lg font-bold text-slate-900">Saved Audits</h2>
-          {savedAudits.length === 0 && <p className="text-sm text-slate-500">No saved audits yet.</p>}
-          <div className="space-y-3">
-            {savedAudits.map((audit) => {
-              const open = expandedAudit === audit.id;
-              return (
-                <article key={audit.id} className="rounded-md border border-slate-200">
-                  <div className="flex items-center justify-between p-3">
-                    <button type="button" onClick={() => setExpandedAudit(open ? null : audit.id)} className="text-left">
-                      <p className="font-semibold text-slate-900">{audit.auditNumber} — {audit.auditTitle}</p>
-                      <p className="text-xs text-slate-500">Saved: {audit.savedAtDisplay}</p>
+    <AppShell view={view} setView={setView} search={search} setSearch={setSearch}>
+      {view === "Dashboard" && (
+        <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
+          <div className="space-y-4">
+            <section className="rounded-2xl bg-white p-5 shadow-sm">
+              <h2 className="text-3xl font-bold">Welcome to the 340B internal audit dashboard</h2>
+              <p className="mt-2 text-slate-600">Use this tool for consistent internal 340B audit reviews. No PHI Stored.</p>
+              <button className="mt-4 rounded-xl bg-blue-600 px-4 py-2 font-semibold text-white" onClick={() => setView("New Audit")}>Start New Audit</button>
+            </section>
+            <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Total Audits",kpis.total],["Eligible",kpis.eligible],["Needs Follow-up",kpis.follow],["Completion Rate",`${kpis.completionRate}%`]].map(([l,v]) => <div key={l} className="rounded-2xl bg-white p-4 shadow-sm"><p className="text-sm text-slate-500">{l}</p><p className="text-3xl font-bold">{v}</p></div>)}</section>
+            <section className="rounded-2xl bg-white p-4 shadow-sm">
+              <h3 className="mb-2 text-xl font-semibold">Recent Audits</h3>
+              <div className="space-y-2">
+                {filteredAudits.slice(0, 5).map((audit) => (
+                  <div key={audit.id} className="rounded-xl border border-slate-200">
+                    <button className="grid w-full grid-cols-2 gap-2 p-3 text-left md:grid-cols-6" onClick={() => setExpandedRows((p) => ({ ...p, [audit.id]: !p[audit.id] }))}>
+                      <span>{audit.auditNumber}</span><span>{audit.site}</span><span>Internal</span><span><StatusBadge status={audit.status} /></span><span>{new Date(audit.createdAt).toLocaleDateString()}</span><span>{new Date(audit.updatedAt).toLocaleDateString()}</span>
                     </button>
-                    <button type="button" className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700" onClick={() => deleteAudit(audit.id)}>Delete</button>
+                    {expandedRows[audit.id] && <div className="border-t bg-slate-50 p-3 text-sm">{audit.summary}</div>}
                   </div>
-                  {open && (
-                    <div className="border-t border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                      <p><strong>Final Status:</strong> {audit.finalStatus}</p>
-                      <p><strong>Answers:</strong> {JSON.stringify(audit.answers)}</p>
-                      <p><strong>Setup Notes:</strong> {audit.notes.setupNotes || "—"}</p>
-                      <p><strong>Medication Notes:</strong> {audit.notes.medicationNotes || "—"}</p>
-                      <p><strong>Encounter Notes:</strong> {audit.notes.encounterNotes || "—"}</p>
-                    </div>
-                  )}
-                </article>
-              );
-            })}
+                ))}
+              </div>
+            </section>
           </div>
+          <aside className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-xl font-semibold">Audit Guidance</h3><ol className="space-y-2 text-sm">{workflowSteps.map((s) => <li key={s}>{s}</li>)}</ol></aside>
+        </div>
+      )}
+
+      {(view === "New Audit" || view === "Audit Workflow") && (
+        <section className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">
+          <h2 className="text-3xl font-bold">Start New Audit</h2>
+          <div className="grid gap-3 md:grid-cols-3"><input value={form.auditNumber} readOnly className="rounded-xl border px-3 py-2" /><input value={form.auditTitle} onChange={(e) => update("auditTitle", e.target.value)} placeholder="Audit Title (optional)" className="rounded-xl border px-3 py-2 md:col-span-2" /></div>
+          <div className="grid gap-2 sm:grid-cols-5">{workflowSteps.map((s, i) => <button key={s} className={`rounded-lg border p-2 text-sm ${i===step?"border-blue-600 bg-blue-50":""}`} onClick={() => setStep(i)}>{i+1}. {s}</button>)}</div>
+
+          {step === 0 && <div className="rounded-xl border p-4"><p className="font-semibold">Is PCP a NOHN provider?</p><p className="mb-2 text-sm text-slate-600">Assigned PCP should be a NOHN provider at the time of service.</p><div className="space-x-2"><button className="rounded border px-3 py-1" onClick={() => update("pcpIsNohn", "Yes")}>Yes</button><button className="rounded border px-3 py-1" onClick={() => update("pcpIsNohn", "No")}>No</button></div></div>}
+          {step === 1 && <div className="rounded-xl border p-4"><p className="font-semibold">Is the medication on the Epic med list?</p><div className="my-2 space-x-2"><button className="rounded border px-3 py-1" onClick={() => update("epicMedList", "Yes")}>Yes</button><button className="rounded border px-3 py-1" onClick={() => update("epicMedList", "No")}>No</button></div>{form.epicMedList === "No" && <textarea value={form.epicFollowUp} onChange={(e)=>update("epicFollowUp", e.target.value)} placeholder="Example: Medication needs to be added or corrected on the Epic medication list. Do not enter PHI." className="w-full rounded-xl border p-3" required />}</div>}
+          {step === 2 && <div className="rounded-xl border p-4"><p className="font-semibold">Does a valid referral exist?</p><div className="my-2 space-x-2"><button className="rounded border px-3 py-1" onClick={() => update("referralValid", "Yes")}>Yes</button><button className="rounded border px-3 py-1" onClick={() => update("referralValid", "No")}>No</button></div><div className="grid gap-2 md:grid-cols-3"><input placeholder="Referral source" className="rounded border px-3 py-2" value={form.referralSource} onChange={(e)=>update("referralSource", e.target.value)} /><input placeholder="Referral type" className="rounded border px-3 py-2" value={form.referralType} onChange={(e)=>update("referralType", e.target.value)} /><input type="date" className="rounded border px-3 py-2" value={form.referralDate} onChange={(e)=>update("referralDate", e.target.value)} /></div><details className="mt-3 rounded-xl bg-blue-50 p-3"><summary className="cursor-pointer font-semibold">What qualifies?</summary><p className="mt-2 text-sm">A valid referral is documented evidence that the patient was referred for services at the 340B covered entity. The referral should support that the service or treatment was connected to the covered entity.</p></details></div>}
+          {step === 3 && <div className="rounded-xl border p-4"><p className="font-semibold">Was there a qualifying encounter on or after the referral date?</p><div className="my-2 space-x-2"><button className="rounded border px-3 py-1" onClick={() => update("encounterValid", "Yes")}>Yes</button><button className="rounded border px-3 py-1" onClick={() => update("encounterValid", "No")}>No</button></div><input type="date" className="rounded border px-3 py-2" value={form.encounterDate} onChange={(e)=>update("encounterDate", e.target.value)} /><p className="mt-2 text-sm text-slate-600">Confirm the encounter supports 340B eligibility according to internal procedure.</p></div>}
+          {step === 4 && <div className="rounded-xl border bg-slate-50 p-4"><h3 className="mb-2 text-xl font-semibold">Summary</h3><p>Audit number: {form.auditNumber}</p><p>Audit title: {form.auditTitle || "—"}</p><p>Overall status: <StatusBadge status={overallStatus} /></p><p>PCP Validation: {form.pcpIsNohn || "—"}</p><p>Epic Med List: {form.epicMedList || "—"}</p><p>Referral Review: {form.referralValid || "—"}</p><p>Encounter Check: {form.encounterValid || "—"}</p><p>Follow-up notes: {form.epicFollowUp || "—"}</p><p className="mt-2">Final generated audit notes summary: {SummaryText({ form, overallStatus })}</p><div className="mt-3 flex flex-wrap gap-2"><button className="rounded border px-3 py-2" onClick={() => navigator.clipboard.writeText(SummaryText({ form, overallStatus }))}>Copy Summary</button><button className="rounded bg-blue-600 px-3 py-2 text-white" onClick={saveAudit}>Save Audit</button><button className="rounded border px-3 py-2" onClick={() => { setForm({ ...form, auditNumber: createAuditNumber(), auditTitle: "" }); setStep(0); setView("New Audit"); }}>Start New Audit</button><button className="rounded border px-3 py-2" onClick={() => setView("Saved Audits")}>View Saved Audits</button></div>{saveMessage && <p className="mt-2 text-emerald-700">{saveMessage}</p>}</div>}
+
+          <div className="flex justify-between"><button className="rounded border px-3 py-2" onClick={() => setStep((s) => Math.max(0, s - 1))}>Previous step</button><button className="rounded bg-blue-600 px-3 py-2 text-white" onClick={() => setStep((s) => Math.min(4, s + 1))}>Continue to next step</button></div>
         </section>
-      </div>
-    </main>
+      )}
+
+      {view === "Saved Audits" && (
+        <section className="rounded-2xl bg-white p-4 shadow-sm">
+          <h2 className="mb-3 text-2xl font-bold">Saved Audits</h2>
+          <div className="space-y-2">{filteredAudits.map((audit) => <div key={audit.id} className="rounded-xl border border-slate-200"><div className="flex items-center justify-between p-3"><button className="text-left" onClick={() => setExpandedRows((p)=>({ ...p, [audit.id]: !p[audit.id] }))}><p className="font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled Audit"}</p><p className="text-xs text-slate-500">Created: {new Date(audit.createdAt).toLocaleString()} • Updated: {new Date(audit.updatedAt).toLocaleString()}</p></button><div className="flex items-center gap-3"><StatusBadge status={audit.status} /><button className="rounded border border-red-200 px-2 py-1 text-red-600" onClick={() => deleteAudit(audit.id)}>✕</button></div></div>{expandedRows[audit.id] && <div className="border-t bg-slate-50 p-3 text-sm"><p>{audit.summary}</p></div>}</div>)}</div>
+        </section>
+      )}
+
+      {(view === "Reports" || view === "Settings") && <section className="rounded-2xl bg-white p-8 shadow-sm text-slate-600">{view} page placeholder.</section>}
+    </AppShell>
   );
 }
