@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "nohn_340b_saved_audits";
+const ACTIVE_AUDIT_KEY = "nohn_340b_active_audit";
 const PHI_WARNING = "Do not enter patient names, DOB, MRN, or other identifying information.";
 
 const referralInfo =
@@ -166,6 +167,15 @@ function getSavedAudits() {
 function saveAuditRecord(record) {
   const savedAudits = getSavedAudits();
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...savedAudits, [record.auditNumber]: record }));
+}
+
+function getActiveAudit() {
+  try {
+    const saved = window.localStorage.getItem(ACTIVE_AUDIT_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch {
+    return null;
+  }
 }
 
 function getAuditTags(answers) {
@@ -647,6 +657,7 @@ function ResultCard({ finalStep, note, onBack, onNewAudit, onSave }) {
 }
 
 export default function AuditChecklist() {
+  const activeAudit = getActiveAudit();
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState({});
   const [stepHistory, setStepHistory] = useState([]);
@@ -738,7 +749,31 @@ export default function AuditChecklist() {
     setAuditNumber(createAuditNumber());
     resetStagedDecision();
     setConfirmedPhi(false);
+    window.localStorage.removeItem(ACTIVE_AUDIT_KEY);
   };
+
+  useEffect(() => {
+    if (!activeAudit) return;
+    setStep(activeAudit.step ?? 0);
+    setAnswers(activeAudit.answers ?? {});
+    setStepHistory(activeAudit.stepHistory ?? []);
+    setAuditNumber(activeAudit.auditNumber ?? createAuditNumber());
+    setEvidenceDetails(activeAudit.evidenceDetails ?? Object.fromEntries(evidenceItems.map((item, index) => [item, { verified: index < 3, source: "Epic", date: new Date().toISOString().slice(0, 10), note: "" }])));
+    setConfirmedPhi(Boolean(activeAudit.confirmedPhi));
+  }, []);
+
+  useEffect(() => {
+    const snapshot = {
+      step,
+      answers,
+      stepHistory,
+      auditNumber,
+      evidenceDetails,
+      confirmedPhi,
+      savedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(ACTIVE_AUDIT_KEY, JSON.stringify(snapshot));
+  }, [step, answers, stepHistory, auditNumber, evidenceDetails, confirmedPhi]);
 
   return (
     <main className="min-h-screen bg-[#f8fafc] text-slate-950">
