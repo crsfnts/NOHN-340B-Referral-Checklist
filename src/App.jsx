@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "nohn_340b_saved_audits_v3";
+const NOTES_STORAGE_KEY = "nohn_340b_notes_v1";
 const SITES = [
   "NOHN Family Health Center",
   "NOHN Community Clinic",
@@ -9,19 +10,19 @@ const SITES = [
   "NOHN Pediatrics",
 ];
 
-const navItems = ["Dashboard", "Saved Audits"];
+const navItems = ["Dashboard", "Saved Audits", "Notes"];
 const AUDIT_QUESTIONS = [
-  "Is PCP a NOHN provider?",
-  "Is patient attributed to a NOHN covered location?",
-  "Is medication documented on the Epic med list?",
-  "Was medication ordered by an eligible NOHN provider?",
-  "Does a valid referral exist?",
-  "Does referral source support covered entity relationship?",
-  "Is referral date documented?",
-  "Was there a qualifying encounter on or after referral date?",
-  "Is encounter documentation complete for internal policy?",
-  "Are all required chart elements present for 340B audit?",
-  "Does this audit pass internal 340B compliance review?",
+  { question: "Is PCP a NOHN provider?" },
+  { question: "Is patient attributed to a NOHN covered location?" },
+  { question: "Is medication documented on the Epic med list?" },
+  { question: "Was medication ordered by an eligible NOHN provider?", dependsOn: 2, showWhen: "Yes" },
+  { question: "Does a valid referral exist?" },
+  { question: "Does referral source support covered entity relationship?", dependsOn: 4, showWhen: "Yes" },
+  { question: "Is referral date documented?", dependsOn: 4, showWhen: "Yes" },
+  { question: "Was there a qualifying encounter on or after referral date?", dependsOn: 4, showWhen: "Yes" },
+  { question: "Is encounter documentation complete for internal policy?", dependsOn: 7, showWhen: "Yes" },
+  { question: "Are all required chart elements present for 340B audit?" },
+  { question: "Does this audit pass internal 340B compliance review?" },
 ];
 
 const statusStyles = {
@@ -32,10 +33,12 @@ const statusStyles = {
 const brand = { primary: "#0d3f66", accent: "#1e7ea7", soft: "#e9f4fb" };
 
 const createAuditNumber = () => `AUD-${String(Math.floor(10000 + Math.random() * 89999))}`;
-const getDefaultAnswers = () => AUDIT_QUESTIONS.map((q) => ({ question: q, answer: "", note: "" }));
+const getDefaultAnswers = () => AUDIT_QUESTIONS.map((q) => ({ question: q.question, answer: "", note: "" }));
 
 function loadSavedAudits() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
+function loadSavedNotes() { try { return JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY) || "{}"); } catch { return {}; } }
 const persistAudits = (audits) => localStorage.setItem(STORAGE_KEY, JSON.stringify(audits));
+const persistNotes = (notes) => localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
 const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
 
 const StatusBadge = ({ status }) => <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusStyles[status] || "bg-slate-100 text-slate-700"}`}>{status}</span>;
@@ -47,18 +50,42 @@ export default function App() {
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [showWorkflow, setShowWorkflow] = useState(false);
+  const [isClosingWorkflow, setIsClosingWorkflow] = useState(false);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [isAdvancing, setIsAdvancing] = useState(false);
+  const [calendarDate, setCalendarDate] = useState(() => new Date());
+  const [notes, setNotes] = useState(() => loadSavedNotes());
+  const [draftNote, setDraftNote] = useState("");
   const [form, setForm] = useState({ auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() });
 
-  useEffect(() => setSavedAudits(loadSavedAudits()), []);
+  useEffect(() => {
+    setSavedAudits(loadSavedAudits());
+    const loadedNotes = loadSavedNotes();
+    setNotes(loadedNotes);
+    setDraftNote(loadedNotes.content || "");
+  }, []);
 
-  const updateAnswer = (index, updates) => setForm((prev) => {
-    const answers = [...prev.answers]; answers[index] = { ...answers[index], ...updates }; return { ...prev, answers };
-  });
+  const isQuestionVisible = (index, answers) => {
+    const cfg = AUDIT_QUESTIONS[index];
+    if (cfg.dependsOn === undefined) return true;
+    return answers[cfg.dependsOn]?.answer === cfg.showWhen;
+  };
 
-  const answeredCount = useMemo(() => form.answers.filter((a) => a.answer).length, [form.answers]);
-  const overallStatus = useMemo(() => (answeredCount < AUDIT_QUESTIONS.length ? "In Progress" : form.answers.every((a) => a.answer === "Yes") ? "Eligible" : "Needs Follow-up"), [answeredCount, form.answers]);
+  const nextVisibleQuestionIndex = (startIndex, answers) => {
+    for (let i = startIndex; i < AUDIT_QUESTIONS.length; i += 1) {
+      if (isQuestionVisible(i, answers)) return i;
+    }
+    return AUDIT_QUESTIONS.length;
+  };
+
+  const askedIndexes = useMemo(() => AUDIT_QUESTIONS.map((_, idx) => idx).filter((idx) => isQuestionVisible(idx, form.answers)), [form.answers]);
+  const askedCount = askedIndexes.length;
+  const answeredCount = useMemo(() => askedIndexes.filter((idx) => form.answers[idx].answer).length, [askedIndexes, form.answers]);
+  const overallStatus = useMemo(() => {
+    if (answeredCount < askedCount) return "In Progress";
+    const answeredAsked = askedIndexes.map((idx) => form.answers[idx]);
+    return answeredAsked.every((a) => a.answer === "Yes") ? "Eligible" : "Needs Follow-up";
+  }, [answeredCount, askedCount, askedIndexes, form.answers]);
   const completedAudits = useMemo(() => savedAudits.filter((a) => a.status !== "In Progress"), [savedAudits]);
   const auditsByDate = useMemo(() => completedAudits.reduce((acc, a) => ({ ...acc, [dayKey(a.completedAt || a.updatedAt)]: true }), {}), [completedAudits]);
 
@@ -70,8 +97,23 @@ export default function App() {
 
   const saveAudit = () => {
     const now = new Date().toISOString();
-    const record = { ...form, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status: overallStatus };
-    const updated = [record, ...savedAudits]; setSavedAudits(updated); persistAudits(updated); setShowWorkflow(false); setView("Saved Audits");
+    const visibleAnswers = form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers));
+    const record = { ...form, answers: visibleAnswers, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status: overallStatus };
+    const updated = [record, ...savedAudits]; setSavedAudits(updated); persistAudits(updated); closeWorkflow(); setView("Saved Audits");
+  };
+
+  const closeWorkflow = () => {
+    setIsClosingWorkflow(true);
+    setTimeout(() => {
+      setShowWorkflow(false);
+      setIsClosingWorkflow(false);
+    }, 180);
+  };
+
+  const saveNotes = () => {
+    const updated = { content: draftNote, updatedAt: new Date().toISOString() };
+    setNotes(updated);
+    persistNotes(updated);
   };
 
   const exportAuditsToExcel = (audits) => {
@@ -84,7 +126,21 @@ export default function App() {
   };
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
-  const handleDecision = (answer) => { if (isAdvancing) return; updateAnswer(questionIndex, { answer }); setIsAdvancing(true); setTimeout(() => { setQuestionIndex((i) => Math.min(i + 1, AUDIT_QUESTIONS.length)); setIsAdvancing(false); }, 190); };
+  const handleDecision = (answer) => {
+    if (isAdvancing) return;
+    const updatedAnswers = form.answers.map((entry, idx) => {
+      if (idx === questionIndex) return { ...entry, answer };
+      const cfg = AUDIT_QUESTIONS[idx];
+      if (cfg.dependsOn === questionIndex && answer !== cfg.showWhen) return { ...entry, answer: "", note: "" };
+      return entry;
+    });
+    setForm((prev) => ({ ...prev, answers: updatedAnswers }));
+    setIsAdvancing(true);
+    setTimeout(() => {
+      setQuestionIndex(nextVisibleQuestionIndex(questionIndex + 1, updatedAnswers));
+      setIsAdvancing(false);
+    }, 190);
+  };
 
   const kpis = {
     total: savedAudits.length,
@@ -94,7 +150,21 @@ export default function App() {
     review: savedAudits.filter((a) => a.status !== "Eligible" && a.status !== "In Progress").length,
   };
 
-  const calendarDays = [...Array(31)].map((_, i) => String(i + 1).padStart(2, "0"));
+  const weeklyActivity = useMemo(() => {
+    const days = [...Array(7)].map((_, idx) => {
+      const dt = new Date();
+      dt.setDate(dt.getDate() - (6 - idx));
+      const key = dayKey(dt.toISOString());
+      const count = savedAudits.filter((audit) => dayKey(audit.completedAt || audit.updatedAt) === key).length;
+      return { label: dt.toLocaleDateString("en-US", { weekday: "short" }), count };
+    });
+    return days;
+  }, [savedAudits]);
+
+  const monthStart = new Date(calendarDate.getFullYear(), calendarDate.getMonth(), 1);
+  const daysInMonth = new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 0).getDate();
+  const firstWeekday = monthStart.getDay();
+  const calendarCells = [...Array(firstWeekday).fill(null), ...[...Array(daysInMonth)].map((_, i) => i + 1)];
 
   return <div className="min-h-screen bg-slate-100 text-slate-800">
     <div className="grid min-h-screen lg:grid-cols-[250px_1fr]">
@@ -103,30 +173,38 @@ export default function App() {
         <nav className="space-y-2">{navItems.map((item) => <button key={item} onClick={() => setView(item)} className="w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-700" style={view === item ? { background: brand.accent } : {}}>{item}</button>)}</nav>
       </aside>
       <main>
-        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { setForm({ auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }); setQuestionIndex(0); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5" style={{ background: brand.primary }}>New Audit</button></div></header>
+        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div></header>
 
         <div className="p-4 md:p-6">{view === "Dashboard" && <div className="grid gap-4 xl:grid-cols-[1fr_290px]">
           <section className="space-y-4"><div className="rounded-2xl bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{new Date().toLocaleDateString()}</p><h2 className="text-2xl font-bold" style={{ color: brand.primary }}>Audit Activity Overview</h2></div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Total Audits", kpis.total], ["Completed", kpis.completed], ["Needs Follow-up", kpis.follow], ["Eligible / Review", `${kpis.eligible} / ${kpis.review}`]].map(([l, v]) => <div key={l} className="rounded-2xl bg-white p-4 shadow-sm transition hover:-translate-y-0.5"><p className="text-xs text-slate-500">{l}</p><p className="text-3xl font-bold">{v}</p></div>)}</div>
-            <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Saved Audits</h3><button className="rounded-lg border px-3 py-1.5 text-sm" onClick={() => setView("Saved Audits")}>Open list</button></div>
-              <div className="space-y-1">{filteredAudits.slice(0, 6).map((audit) => <button key={audit.id} className="flex w-full items-center justify-between rounded-xl border-b border-slate-100 px-2 py-2 text-left transition hover:bg-slate-50" onClick={() => { setView("Saved Audits"); setSelectedAudit(audit); }}><div><p className="text-sm font-semibold">{audit.auditNumber} • {audit.auditTitle || "Untitled Audit"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleDateString()}</p></div><StatusBadge status={audit.status} /></button>)}</div></div>
+            <div className="grid gap-3 md:grid-cols-2"><div className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-2 font-semibold">Last 7 Days</h3><div className="flex h-24 items-end gap-2">{weeklyActivity.map((d) => <div key={d.label} className="flex flex-1 flex-col items-center gap-1"><div className="w-full rounded-t" style={{ height: `${Math.max(8, d.count * 14)}px`, background: brand.accent, opacity: d.count ? 0.95 : 0.25 }} /><span className="text-[11px] text-slate-500">{d.label}</span></div>)}</div></div>
+              <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Saved Audits</h3><button className="rounded-lg border px-3 py-1.5 text-sm" onClick={() => setView("Saved Audits")}>Open list</button></div>
+                <div className="space-y-1">{filteredAudits.slice(0, 5).map((audit) => <button key={audit.id} className="flex w-full items-center justify-between rounded-xl border-b border-slate-100 px-2 py-2 text-left transition hover:bg-slate-50" onClick={() => { setView("Saved Audits"); setSelectedAudit(audit); }}><div><p className="text-sm font-semibold">{audit.auditNumber} • {audit.auditTitle || "Untitled Audit"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleDateString()}</p></div><StatusBadge status={audit.status} /></button>)}</div></div></div>
           </section>
-          <aside className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="font-semibold">Calendar Filter</h3><p className="mb-2 text-xs text-slate-500">{new Date().toLocaleString("default", { month: "long", year: "numeric" })}</p><div className="grid grid-cols-7 gap-1 text-center text-xs">{calendarDays.map((d) => { const date = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${d}`; const active = selectedDate === date; return <button key={d} onClick={() => setSelectedDate(date)} className="relative rounded-lg px-1 py-2 transition hover:bg-slate-100" style={active ? { background: brand.soft, color: brand.primary, fontWeight: 700 } : {}}>{Number(d)}{auditsByDate[date] && <span className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full" style={{ background: brand.accent }} />}</button>; })}</div><button className="mt-3 text-xs font-medium" style={{ color: brand.accent }} onClick={() => setSelectedDate("")}>Show all audits</button></aside>
+          <aside className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-2 flex items-center justify-between"><h3 className="font-semibold">Calendar Filter</h3><div className="flex gap-1"><button className="rounded border px-2 text-xs" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1))}>‹</button><button className="rounded border px-2 text-xs" onClick={() => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1))}>›</button></div></div><p className="mb-2 text-xs text-slate-500">{calendarDate.toLocaleString("default", { month: "long", year: "numeric" })}</p><div className="mb-1 grid grid-cols-7 gap-1 text-center text-[11px] text-slate-500">{["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d}>{d}</div>)}</div><div className="grid grid-cols-7 gap-1 text-center text-xs">{calendarCells.map((d, idx) => {
+            if (!d) return <div key={`empty-${idx}`} className="px-1 py-2" />;
+            const date = `${calendarDate.getFullYear()}-${String(calendarDate.getMonth() + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+            const active = selectedDate === date;
+            return <button key={date} onClick={() => setSelectedDate(date)} className="relative rounded-lg px-1 py-2 transition hover:bg-slate-100" style={active ? { background: brand.soft, color: brand.primary, fontWeight: 700 } : {}}>{d}{auditsByDate[date] && <span className="absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full" style={{ background: brand.accent }} />}</button>;
+          })}</div><button className="mt-3 text-xs font-medium" style={{ color: brand.accent }} onClick={() => setSelectedDate("")}>Show all audits</button></aside>
         </div>}
 
         {view === "Saved Audits" && <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]"><section className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h2 className="text-xl font-bold">Saved Audits</h2><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel(filteredAudits)}>Export to Excel</button></div>
-          <div className="space-y-1">{filteredAudits.map((audit) => <button key={audit.id} onClick={() => setSelectedAudit(audit)} className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-slate-50"><div className="flex items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Eligible" ? "#14b8a6" : "#f59e0b" }} /><div><p className="text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button>)}</div>
+          <div className="space-y-1">{filteredAudits.map((audit) => <button key={audit.id} onClick={() => setSelectedAudit((prev) => prev?.id === audit.id ? null : audit)} className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-slate-50"><div className="flex items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Eligible" ? "#14b8a6" : "#f59e0b" }} /><div><p className="text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button>)}</div>
         </section>
-        <section className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Audit Timeline</h3>{selectedAudit ? <div className="space-y-3">{selectedAudit.answers.map((a, idx) => <div key={`${selectedAudit.id}-${idx}`} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 pl-6 animate-[fadeIn_.3s_ease]"><span className="absolute left-2 top-4 h-2 w-2 rounded-full" style={{ background: a.answer === "Yes" ? "#14b8a6" : "#f59e0b" }} /><p className="text-xs text-slate-500">Question {idx + 1}</p><p className="text-sm font-semibold">{a.question}</p><p className="text-sm">Answer: <strong>{a.answer || "—"}</strong></p><p className="text-xs text-slate-600">Notes: {a.note || "—"}</p></div>)}</div> : <p className="text-sm text-slate-500">Select an audit to view timeline history.</p>}</section></div>}
+        <section className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Audit Timeline</h3>{selectedAudit ? <div className="space-y-3 animate-fade-in">{selectedAudit.answers.map((a, idx) => <div key={`${selectedAudit.id}-${idx}`} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 pl-6"><span className="absolute left-2 top-4 h-2 w-2 rounded-full" style={{ background: a.answer === "Yes" ? "#14b8a6" : "#f59e0b" }} /><p className="text-xs text-slate-500">Question {idx + 1}</p><p className="text-sm font-semibold">{a.question}</p><p className="text-sm">Answer: <strong>{a.answer || "—"}</strong></p><p className="text-xs text-slate-600">Notes: {a.note || "—"}</p></div>)}</div> : <p className="text-sm text-slate-500">Select an audit to view timeline history.</p>}</section></div>}
+
+        {view === "Notes" && <section className="rounded-2xl bg-white p-4 shadow-sm"><h2 className="text-xl font-bold">Notes</h2><p className="mb-3 text-sm text-slate-500">Save quick working notes for your audits.</p><textarea value={draftNote} onChange={(e) => setDraftNote(e.target.value)} className="min-h-[260px] w-full rounded-xl border p-3 text-sm" placeholder="Type notes here..." /><div className="mt-3 flex items-center justify-between"><p className="text-xs text-slate-500">Last updated: {notes.updatedAt ? new Date(notes.updatedAt).toLocaleString() : "Not saved yet"}</p><button className="rounded-lg px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5" style={{ background: brand.primary }} onClick={saveNotes}>Save Notes</button></div></section>}
         </div>
       </main>
     </div>
 
-    {showWorkflow && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm"><div className="max-h-[92vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl">
-      <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-bold" style={{ color: brand.primary }}>New 340B Audit</h3><p className="text-xs text-slate-500">{form.auditNumber}</p></div><button className="rounded-lg border px-3 py-1.5 text-sm" onClick={() => setShowWorkflow(false)}>Close</button></div>
+    {showWorkflow && <div className={`fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm ${isClosingWorkflow ? "animate-fade-out" : "animate-fade-in"}`}><div className={`max-h-[92vh] w-full max-w-3xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl ${isClosingWorkflow ? "animate-modal-out" : "animate-modal-in"}`}>
+      <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-bold" style={{ color: brand.primary }}>New 340B Audit</h3><p className="text-xs text-slate-500">{form.auditNumber}</p></div><button className="rounded-lg border px-3 py-1.5 text-sm transition active:scale-95" onClick={closeWorkflow}>Close</button></div>
       <div className="grid gap-3 md:grid-cols-3"><input readOnly value={form.auditNumber} className="rounded-xl border px-3 py-2" /><input value={form.auditTitle} onChange={(e) => setForm((p) => ({ ...p, auditTitle: e.target.value }))} placeholder="Audit title" className="rounded-xl border px-3 py-2" /><select value={form.site} onChange={(e) => setForm((p) => ({ ...p, site: e.target.value }))} className="rounded-xl border px-3 py-2">{SITES.map((site) => <option key={site}>{site}</option>)}</select></div>
-      <div className="mt-4 rounded-xl p-3" style={{ background: brand.soft }}><p className="text-sm font-medium" style={{ color: brand.primary }}>Question {Math.min(questionIndex + 1, AUDIT_QUESTIONS.length)} of {AUDIT_QUESTIONS.length}</p><div className="mt-2 h-2 rounded-full bg-white"><div className="h-2 rounded-full transition-all duration-300" style={{ background: brand.accent, width: `${(answeredCount / AUDIT_QUESTIONS.length) * 100}%` }} /></div></div>
-      {!complete ? <div className={`mt-4 rounded-2xl border p-4 transition duration-200 ${isAdvancing ? "translate-x-1 opacity-80" : "opacity-100"}`}><p className="text-lg font-semibold">{currentQuestion.question}</p><div className="mt-4 flex gap-2"><button onClick={() => handleDecision("Yes")} className="rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 transition hover:-translate-y-0.5 active:scale-[0.98]">Yes</button><button onClick={() => handleDecision("No")} className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:-translate-y-0.5 active:scale-[0.98]">No</button></div><textarea value={currentQuestion.note} onChange={(e) => updateAnswer(questionIndex, { note: e.target.value })} placeholder="Optional notes / follow-up" className="mt-3 w-full rounded-xl border p-3 text-sm" /></div> : <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-4"><h4 className="text-lg font-bold">Audit Complete</h4><p className="text-sm">Status: <StatusBadge status={overallStatus} /></p><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: brand.primary }} onClick={saveAudit}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel([{ ...form, createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: overallStatus }])}>Export to Excel</button></div></div>}
+      <div className="mt-4 rounded-xl p-3" style={{ background: brand.soft }}><p className="text-sm font-medium" style={{ color: brand.primary }}>Question {Math.min(answeredCount + 1, askedCount)} of {askedCount}</p><div className="mt-2 h-2 rounded-full bg-white"><div className="h-2 rounded-full transition-all duration-300" style={{ background: brand.accent, width: `${askedCount ? (answeredCount / askedCount) * 100 : 0}%` }} /></div></div>
+      {!complete ? <div className={`mt-4 rounded-2xl border p-4 transition duration-200 ${isAdvancing ? "translate-x-1 opacity-80" : "opacity-100"}`}><p className="text-lg font-semibold animate-fade-in">{currentQuestion.question}</p><div className="mt-4 flex gap-2"><button onClick={() => handleDecision("Yes")} className="rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 transition hover:-translate-y-0.5 active:scale-95">Yes</button><button onClick={() => handleDecision("No")} className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:-translate-y-0.5 active:scale-95">No</button></div><textarea value={currentQuestion.note} onChange={(e) => setForm((prev) => { const answers = [...prev.answers]; answers[questionIndex] = { ...answers[questionIndex], note: e.target.value }; return { ...prev, answers }; })} placeholder="Optional notes / follow-up" className="mt-3 w-full rounded-xl border p-3 text-sm" /></div> : <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold">Audit Complete</h4><p className="text-sm">Status: <StatusBadge status={overallStatus} /></p><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }} onClick={saveAudit}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers)), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: overallStatus }])}>Export to Excel</button></div></div>}
     </div></div>}
   </div>;
 }
