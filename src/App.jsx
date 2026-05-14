@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const STORAGE_KEY = "nohn_340b_saved_audits_v3";
-const NOTES_STORAGE_KEY = "nohn_340b_notes_v1";
+const NOTES_STORAGE_KEY = "nohn_340b_notes_v2";
 const SITES = [
   "NOHN Family Health Center",
   "NOHN Community Clinic",
@@ -26,8 +26,9 @@ const AUDIT_QUESTIONS = [
 ];
 
 const statusStyles = {
-  Eligible: "bg-teal-100 text-teal-800",
-  "Needs Follow-up": "bg-amber-100 text-amber-800",
+  Passed: "bg-teal-100 text-teal-800",
+  "Review Needed": "bg-amber-100 text-amber-800",
+  Failed: "bg-rose-100 text-rose-800",
   "In Progress": "bg-sky-100 text-sky-800",
 };
 const brand = { primary: "#0d3f66", accent: "#1e7ea7", soft: "#e9f4fb" };
@@ -36,7 +37,7 @@ const createAuditNumber = () => `AUD-${String(Math.floor(10000 + Math.random() *
 const getDefaultAnswers = () => AUDIT_QUESTIONS.map((q) => ({ question: q.question, answer: "", note: "" }));
 
 function loadSavedAudits() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
-function loadSavedNotes() { try { return JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY) || "{}"); } catch { return {}; } }
+function loadSavedNotes() { try { return JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY) || "[]"); } catch { return []; } }
 const persistAudits = (audits) => localStorage.setItem(STORAGE_KEY, JSON.stringify(audits));
 const persistNotes = (notes) => localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
 const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
@@ -56,13 +57,14 @@ export default function App() {
   const [calendarDate, setCalendarDate] = useState(() => new Date());
   const [notes, setNotes] = useState(() => loadSavedNotes());
   const [draftNote, setDraftNote] = useState("");
+  const [activeNoteId, setActiveNoteId] = useState(null);
+  const [noteTitle, setNoteTitle] = useState("");
+  const [failContext, setFailContext] = useState(null);
   const [form, setForm] = useState({ auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() });
 
   useEffect(() => {
     setSavedAudits(loadSavedAudits());
-    const loadedNotes = loadSavedNotes();
-    setNotes(loadedNotes);
-    setDraftNote(loadedNotes.content || "");
+    setNotes(loadSavedNotes());
   }, []);
 
   const isQuestionVisible = (index, answers) => {
@@ -84,7 +86,8 @@ export default function App() {
   const overallStatus = useMemo(() => {
     if (answeredCount < askedCount) return "In Progress";
     const answeredAsked = askedIndexes.map((idx) => form.answers[idx]);
-    return answeredAsked.every((a) => a.answer === "Yes") ? "Eligible" : "Needs Follow-up";
+    if (answeredAsked.some((a) => a.answer === "No")) return "Review Needed";
+    return "Passed";
   }, [answeredCount, askedCount, askedIndexes, form.answers]);
   const completedAudits = useMemo(() => savedAudits.filter((a) => a.status !== "In Progress"), [savedAudits]);
   const auditsByDate = useMemo(() => completedAudits.reduce((acc, a) => ({ ...acc, [dayKey(a.completedAt || a.updatedAt)]: true }), {}), [completedAudits]);
@@ -95,10 +98,11 @@ export default function App() {
     return textMatch && dateMatch;
   }), [savedAudits, search, selectedDate]);
 
-  const saveAudit = () => {
+  const saveAudit = (statusOverride, failReasonOverride = null) => {
     const now = new Date().toISOString();
     const visibleAnswers = form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers));
-    const record = { ...form, answers: visibleAnswers, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status: overallStatus };
+    const status = statusOverride || overallStatus;
+    const record = { ...form, answers: visibleAnswers, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status, failReason: failReasonOverride };
     const updated = [record, ...savedAudits]; setSavedAudits(updated); persistAudits(updated); closeWorkflow(); setView("Saved Audits");
   };
 
@@ -111,9 +115,35 @@ export default function App() {
   };
 
   const saveNotes = () => {
-    const updated = { content: draftNote, updatedAt: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const trimmedTitle = noteTitle.trim() || draftNote.trim().split("\n")[0] || "Untitled note";
+    const trimmedContent = draftNote.trim();
+    if (!trimmedContent) return;
+    const noteId = activeNoteId || `note-${Date.now()}`;
+    const updatedNote = { id: noteId, title: trimmedTitle, content: draftNote, updatedAt: now };
+    const updated = activeNoteId ? notes.map((note) => note.id === activeNoteId ? updatedNote : note) : [updatedNote, ...notes];
+    setNotes(updated);
+    setActiveNoteId(noteId);
+    persistNotes(updated);
+  };
+
+  const startNewNote = () => {
+    setActiveNoteId(null);
+    setNoteTitle("");
+    setDraftNote("");
+  };
+
+  const loadNote = (note) => {
+    setActiveNoteId(note.id);
+    setNoteTitle(note.title || "");
+    setDraftNote(note.content || "");
+  };
+
+  const deleteNote = (noteId) => {
+    const updated = notes.filter((note) => note.id !== noteId);
     setNotes(updated);
     persistNotes(updated);
+    if (activeNoteId === noteId) startNewNote();
   };
 
   const exportAuditsToExcel = (audits) => {
@@ -135,6 +165,12 @@ export default function App() {
       return entry;
     });
     setForm((prev) => ({ ...prev, answers: updatedAnswers }));
+    const isHardFail = answer === "No" && (questionIndex === 0 || questionIndex === 3);
+    if (isHardFail) {
+      setFailContext({ questionIndex, question: AUDIT_QUESTIONS[questionIndex].question, answer: "No" });
+      setQuestionIndex(AUDIT_QUESTIONS.length);
+      return;
+    }
     setIsAdvancing(true);
     setTimeout(() => {
       setQuestionIndex(nextVisibleQuestionIndex(questionIndex + 1, updatedAnswers));
@@ -145,9 +181,9 @@ export default function App() {
   const kpis = {
     total: savedAudits.length,
     completed: completedAudits.length,
-    follow: savedAudits.filter((a) => a.status === "Needs Follow-up").length,
-    eligible: savedAudits.filter((a) => a.status === "Eligible").length,
-    review: savedAudits.filter((a) => a.status !== "Eligible" && a.status !== "In Progress").length,
+    failed: savedAudits.filter((a) => a.status === "Failed").length,
+    passed: savedAudits.filter((a) => a.status === "Passed").length,
+    review: savedAudits.filter((a) => a.status === "Review Needed").length,
   };
 
   const weeklyActivity = useMemo(() => {
@@ -173,11 +209,11 @@ export default function App() {
         <nav className="space-y-2">{navItems.map((item) => <button key={item} onClick={() => setView(item)} className="w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-700" style={view === item ? { background: brand.accent } : {}}>{item}</button>)}</nav>
       </aside>
       <main>
-        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div></header>
+        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div></header>
 
         <div className="p-4 md:p-6">{view === "Dashboard" && <div className="grid gap-4 xl:grid-cols-[1fr_290px]">
           <section className="space-y-4"><div className="rounded-2xl bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{new Date().toLocaleDateString()}</p><h2 className="text-2xl font-bold" style={{ color: brand.primary }}>Audit Activity Overview</h2></div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Total Audits", kpis.total], ["Completed", kpis.completed], ["Needs Follow-up", kpis.follow], ["Eligible / Review", `${kpis.eligible} / ${kpis.review}`]].map(([l, v]) => <div key={l} className="rounded-2xl bg-white p-4 shadow-sm transition hover:-translate-y-0.5"><p className="text-xs text-slate-500">{l}</p><p className="text-3xl font-bold">{v}</p></div>)}</div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{[["Total Audits", kpis.total], ["Completed", kpis.completed], ["Passed / Review", `${kpis.passed} / ${kpis.review}`], ["Failed", kpis.failed]].map(([l, v]) => <div key={l} className="rounded-2xl bg-white p-4 shadow-sm transition hover:-translate-y-0.5"><p className="text-xs text-slate-500">{l}</p><p className="text-3xl font-bold">{v}</p></div>)}</div>
             <div className="grid gap-3 md:grid-cols-2"><div className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-2 font-semibold">Last 7 Days</h3><div className="flex h-24 items-end gap-2">{weeklyActivity.map((d) => <div key={d.label} className="flex flex-1 flex-col items-center gap-1"><div className="w-full rounded-t" style={{ height: `${Math.max(8, d.count * 14)}px`, background: brand.accent, opacity: d.count ? 0.95 : 0.25 }} /><span className="text-[11px] text-slate-500">{d.label}</span></div>)}</div></div>
               <div className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">Saved Audits</h3><button className="rounded-lg border px-3 py-1.5 text-sm" onClick={() => setView("Saved Audits")}>Open list</button></div>
                 <div className="space-y-1">{filteredAudits.slice(0, 5).map((audit) => <button key={audit.id} className="flex w-full items-center justify-between rounded-xl border-b border-slate-100 px-2 py-2 text-left transition hover:bg-slate-50" onClick={() => { setView("Saved Audits"); setSelectedAudit(audit); }}><div><p className="text-sm font-semibold">{audit.auditNumber} • {audit.auditTitle || "Untitled Audit"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleDateString()}</p></div><StatusBadge status={audit.status} /></button>)}</div></div></div>
@@ -191,11 +227,11 @@ export default function App() {
         </div>}
 
         {view === "Saved Audits" && <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]"><section className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h2 className="text-xl font-bold">Saved Audits</h2><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel(filteredAudits)}>Export to Excel</button></div>
-          <div className="space-y-1">{filteredAudits.map((audit) => <button key={audit.id} onClick={() => setSelectedAudit((prev) => prev?.id === audit.id ? null : audit)} className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-slate-50"><div className="flex items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Eligible" ? "#14b8a6" : "#f59e0b" }} /><div><p className="text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button>)}</div>
+          <div className="space-y-1">{filteredAudits.map((audit) => <button key={audit.id} onClick={() => setSelectedAudit((prev) => prev?.id === audit.id ? null : audit)} className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-slate-50"><div className="flex items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Failed" ? "#e11d48" : audit.status === "Passed" ? "#14b8a6" : "#f59e0b" }} /><div><p className="text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button>)}</div>
         </section>
-        <section className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Audit Timeline</h3>{selectedAudit ? <div className="space-y-3 animate-fade-in">{selectedAudit.answers.map((a, idx) => <div key={`${selectedAudit.id}-${idx}`} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 pl-6"><span className="absolute left-2 top-4 h-2 w-2 rounded-full" style={{ background: a.answer === "Yes" ? "#14b8a6" : "#f59e0b" }} /><p className="text-xs text-slate-500">Question {idx + 1}</p><p className="text-sm font-semibold">{a.question}</p><p className="text-sm">Answer: <strong>{a.answer || "—"}</strong></p><p className="text-xs text-slate-600">Notes: {a.note || "—"}</p></div>)}</div> : <p className="text-sm text-slate-500">Select an audit to view timeline history.</p>}</section></div>}
+        <section className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Audit Timeline</h3>{selectedAudit ? <div className="space-y-3 animate-fade-in">{selectedAudit.failReason && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><strong>Failure trigger:</strong> {selectedAudit.failReason.question} — <strong>{selectedAudit.failReason.answer}</strong></div>}{selectedAudit.answers.map((a, idx) => <div key={`${selectedAudit.id}-${idx}`} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 pl-6"><span className="absolute left-2 top-4 h-2 w-2 rounded-full" style={{ background: a.answer === "No" ? "#e11d48" : "#14b8a6" }} /><p className="text-xs text-slate-500">Question {idx + 1}</p><p className="text-sm font-semibold">{a.question}</p><p className="text-sm">Answer: <strong>{a.answer || "—"}</strong></p><p className="text-xs text-slate-600">Notes: {a.note || "—"}</p></div>)}</div> : <p className="text-sm text-slate-500">Select an audit to view timeline history.</p>}</section></div>}
 
-        {view === "Notes" && <section className="rounded-2xl bg-white p-4 shadow-sm"><h2 className="text-xl font-bold">Notes</h2><p className="mb-3 text-sm text-slate-500">Save quick working notes for your audits.</p><textarea value={draftNote} onChange={(e) => setDraftNote(e.target.value)} className="min-h-[260px] w-full rounded-xl border p-3 text-sm" placeholder="Type notes here..." /><div className="mt-3 flex items-center justify-between"><p className="text-xs text-slate-500">Last updated: {notes.updatedAt ? new Date(notes.updatedAt).toLocaleString() : "Not saved yet"}</p><button className="rounded-lg px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5" style={{ background: brand.primary }} onClick={saveNotes}>Save Notes</button></div></section>}
+        {view === "Notes" && <section className="grid gap-4 xl:grid-cols-[1fr_360px]"><div className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h2 className="text-xl font-bold">Notes</h2><button className="rounded-lg border px-3 py-1.5 text-sm" onClick={startNewNote}>New Note</button></div><p className="mb-3 text-sm text-slate-500">Save quick working notes for your audits.</p><input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} placeholder="Note title" className="mb-3 w-full rounded-xl border px-3 py-2 text-sm" /><textarea value={draftNote} onChange={(e) => setDraftNote(e.target.value)} className="min-h-[190px] w-full rounded-xl border p-3 text-sm" placeholder="Type notes here..." /><div className="mt-3 flex items-center justify-between"><p className="text-xs text-slate-500">Last updated: {activeNoteId ? new Date((notes.find((n) => n.id === activeNoteId)?.updatedAt) || Date.now()).toLocaleString() : "Not saved yet"}</p><button className="rounded-lg px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5" style={{ background: brand.primary }} onClick={saveNotes}>Save Note</button></div></div><aside className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Saved Notes</h3><div className="space-y-2">{notes.length ? notes.map((note) => <div key={note.id} className="rounded-xl border p-3"><button className="w-full text-left" onClick={() => loadNote(note)}><p className="text-sm font-semibold">{note.title || "Untitled note"}</p><p className="text-xs text-slate-500">{new Date(note.updatedAt).toLocaleString()}</p><p className="mt-1 text-xs text-slate-600">{note.content.slice(0, 72) || "No content"}{note.content.length > 72 ? "..." : ""}</p></button><button className="mt-2 text-xs text-rose-700" onClick={() => deleteNote(note.id)}>Delete</button></div>) : <p className="text-sm text-slate-500">No saved notes yet.</p>}</div></aside></section>}
         </div>
       </main>
     </div>
@@ -204,7 +240,7 @@ export default function App() {
       <div className="mb-4 flex items-center justify-between"><div><h3 className="text-xl font-bold" style={{ color: brand.primary }}>New 340B Audit</h3><p className="text-xs text-slate-500">{form.auditNumber}</p></div><button className="rounded-lg border px-3 py-1.5 text-sm transition active:scale-95" onClick={closeWorkflow}>Close</button></div>
       <div className="grid gap-3 md:grid-cols-3"><input readOnly value={form.auditNumber} className="rounded-xl border px-3 py-2" /><input value={form.auditTitle} onChange={(e) => setForm((p) => ({ ...p, auditTitle: e.target.value }))} placeholder="Audit title" className="rounded-xl border px-3 py-2" /><select value={form.site} onChange={(e) => setForm((p) => ({ ...p, site: e.target.value }))} className="rounded-xl border px-3 py-2">{SITES.map((site) => <option key={site}>{site}</option>)}</select></div>
       <div className="mt-4 rounded-xl p-3" style={{ background: brand.soft }}><p className="text-sm font-medium" style={{ color: brand.primary }}>Question {Math.min(answeredCount + 1, askedCount)} of {askedCount}</p><div className="mt-2 h-2 rounded-full bg-white"><div className="h-2 rounded-full transition-all duration-300" style={{ background: brand.accent, width: `${askedCount ? (answeredCount / askedCount) * 100 : 0}%` }} /></div></div>
-      {!complete ? <div className={`mt-4 rounded-2xl border p-4 transition duration-200 ${isAdvancing ? "translate-x-1 opacity-80" : "opacity-100"}`}><p className="text-lg font-semibold animate-fade-in">{currentQuestion.question}</p><div className="mt-4 flex gap-2"><button onClick={() => handleDecision("Yes")} className="rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 transition hover:-translate-y-0.5 active:scale-95">Yes</button><button onClick={() => handleDecision("No")} className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:-translate-y-0.5 active:scale-95">No</button></div><textarea value={currentQuestion.note} onChange={(e) => setForm((prev) => { const answers = [...prev.answers]; answers[questionIndex] = { ...answers[questionIndex], note: e.target.value }; return { ...prev, answers }; })} placeholder="Optional notes / follow-up" className="mt-3 w-full rounded-xl border p-3 text-sm" /></div> : <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold">Audit Complete</h4><p className="text-sm">Status: <StatusBadge status={overallStatus} /></p><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }} onClick={saveAudit}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers)), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: overallStatus }])}>Export to Excel</button></div></div>}
+      {!complete && !failContext ? <div className={`mt-4 rounded-2xl border p-4 transition duration-200 ${isAdvancing ? "translate-x-1 opacity-80" : "opacity-100"}`}><p className="text-lg font-semibold animate-fade-in">{currentQuestion.question}</p><div className="mt-4 flex gap-2"><button onClick={() => handleDecision("Yes")} className="rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 transition hover:-translate-y-0.5 active:scale-95">Yes</button><button onClick={() => handleDecision("No")} className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:-translate-y-0.5 active:scale-95">No</button></div><textarea value={currentQuestion.note} onChange={(e) => setForm((prev) => { const answers = [...prev.answers]; answers[questionIndex] = { ...answers[questionIndex], note: e.target.value }; return { ...prev, answers }; })} placeholder="Optional notes / follow-up" className="mt-3 w-full rounded-xl border p-3 text-sm" /></div> : failContext ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold text-rose-900">Audit Failed</h4><p className="mb-2 text-sm">Status: <StatusBadge status="Failed" /></p><div className="space-y-1 text-sm"><p><strong>Audit:</strong> {form.auditNumber} — {form.auditTitle || "Untitled Audit"}</p><p><strong>Date:</strong> {new Date().toLocaleString()}</p><p><strong>Failed Question:</strong> {failContext.question}</p><p><strong>Answer:</strong> {failContext.answer}</p></div><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: brand.primary }} onClick={() => saveAudit("Failed", failContext)}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((a) => a.answer), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: "Failed", failReason: failContext }])}>Export to Excel</button></div></div> : <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold">Audit Complete</h4><p className="text-sm">Status: <StatusBadge status={overallStatus} /></p><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }} onClick={() => saveAudit(overallStatus)}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers)), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: overallStatus }])}>Export to Excel</button></div></div>}
     </div></div>}
   </div>;
 }
