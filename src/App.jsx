@@ -59,6 +59,8 @@ export default function App() {
   const [authPassword, setAuthPassword] = useState("");
   const [authState, setAuthState] = useState("");
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isClosingAuthModal, setIsClosingAuthModal] = useState(false);
   const [debugResult, setDebugResult] = useState("");
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [selectedDate, setSelectedDate] = useState("");
@@ -349,13 +351,18 @@ export default function App() {
     setAuthState("");
     try {
       if (authMode === "signup") {
-        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        const { error } = await supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword,
+          options: { emailRedirectTo: window.location.origin },
+        });
         if (error) throw error;
-        setAuthState("Sign-up submitted. Check your email if confirmation is required.");
+        setAuthState("Check your email to confirm your account.");
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
         if (error) throw error;
-        setAuthState("Logged in.");
+        setAuthState("Signed in successfully.");
+        closeAuthModal();
       }
     } catch (error) {
       console.log("[auth] failed", error);
@@ -363,6 +370,21 @@ export default function App() {
     } finally {
       setIsAuthSubmitting(false);
     }
+  };
+
+  const openAuthModal = (mode = "login") => {
+    setAuthMode(mode);
+    setAuthState("");
+    setIsAuthModalOpen(true);
+  };
+
+  const closeAuthModal = () => {
+    if (isAuthSubmitting) return;
+    setIsClosingAuthModal(true);
+    setTimeout(() => {
+      setIsAuthModalOpen(false);
+      setIsClosingAuthModal(false);
+    }, 180);
   };
 
   const handleSignOut = async () => {
@@ -402,6 +424,15 @@ export default function App() {
   };
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
+
+  useEffect(() => {
+    if (!isAuthModalOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") closeAuthModal();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isAuthModalOpen, isAuthSubmitting]);
   const handleDecision = (answer) => {
     if (isAdvancing) return;
     const updatedAnswers = form.answers.map((entry, idx) => {
@@ -457,17 +488,11 @@ export default function App() {
       <main>
         <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div><p className="mt-2 text-xs text-slate-500">{syncState}</p>
           <div className="mt-3 rounded-xl border bg-white p-3">
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-              <span className="font-semibold">{sessionUser?.email ? `Logged in: ${sessionUser.email}` : "Log in to save audits across devices."}</span>
-              {sessionUser && <button onClick={handleSignOut} className="rounded border px-2 py-1">Log out</button>}
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-semibold">{sessionUser?.email ? `Signed in as ${sessionUser.email}` : "Sign in to save audits across devices."}</span>
+              {sessionUser ? <button onClick={handleSignOut} className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium transition hover:bg-slate-50">Sign Out</button> : <button onClick={() => openAuthModal("login")} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }}>Sign In to Save</button>}
             </div>
-            {!sessionUser && <div className="flex flex-wrap items-center gap-2">
-              <select value={authMode} onChange={(e) => setAuthMode(e.target.value)} className="rounded border px-2 py-1 text-xs"><option value="login">Log in</option><option value="signup">Sign up</option></select>
-              <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email" className="rounded border px-2 py-1 text-xs" />
-              <input value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password" type="password" className="rounded border px-2 py-1 text-xs" />
-              <button disabled={isAuthSubmitting} onClick={handleAuth} className="rounded border px-2 py-1 text-xs">{isAuthSubmitting ? "Working..." : (authMode === "signup" ? "Sign up" : "Log in")}</button>
-            </div>}
-            {authState && <p className="mt-2 text-xs text-slate-600">{authState}</p>}
+            {authState && sessionUser && <p className="mt-2 text-xs text-slate-600">{authState}</p>}
             <div className="mt-2">
               <button onClick={testSupabaseConnection} className="rounded border px-2 py-1 text-xs">Test Supabase Connection</button>
               {debugResult && <p className="mt-1 text-xs text-slate-600">{debugResult}</p>}
@@ -508,5 +533,26 @@ export default function App() {
     </div></div>}
 
     {deleteTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm animate-fade-in"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl animate-modal-in"><h3 className="text-lg font-semibold" style={{ color: brand.primary }}>Delete audit?</h3><p className="mt-2 text-sm text-slate-600">Are you sure you want to delete this audit? This action cannot be undone.</p>{deleteError && <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{deleteError}</p>}<div className="mt-4 flex items-center justify-end gap-2"><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => { if (!isDeletingAudit) { setDeleteTarget(null); setDeleteError(""); } }} disabled={isDeletingAudit}>Cancel</button><button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-70" onClick={deleteAudit} disabled={isDeletingAudit}>{isDeletingAudit ? "Deleting..." : "Delete Audit"}</button></div></div></div>}
+    {isAuthModalOpen && <div className={`fixed inset-0 z-[70] grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm ${isClosingAuthModal ? "animate-fade-out" : "animate-fade-in"}`} onMouseDown={(e) => { if (e.target === e.currentTarget) closeAuthModal(); }}>
+      <div className={`w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl ${isClosingAuthModal ? "animate-modal-out" : "animate-modal-in"}`} role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <div className="mb-5 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: brand.accent }}>NOHN 340B Audit Checklist</p>
+            <h2 id="auth-title" className="mt-1 text-2xl font-bold" style={{ color: brand.primary }}>{authMode === "signup" ? "Create your account" : "Welcome back"}</h2>
+            <p className="mt-1 text-sm text-slate-500">Log in to save audits across devices.</p>
+          </div>
+          <button onClick={closeAuthModal} disabled={isAuthSubmitting} className="rounded-lg border px-2.5 py-1 text-xs font-semibold transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">Close</button>
+        </div>
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-slate-700" htmlFor="auth-email">Email</label>
+          <input id="auth-email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="name@nohn.org" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
+          <label className="block text-sm font-medium text-slate-700" htmlFor="auth-password">Password</label>
+          <input id="auth-password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Enter password" type="password" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
+          <button disabled={isAuthSubmitting || !authEmail || !authPassword} onClick={handleAuth} className="mt-1 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60" style={{ background: brand.primary }}>{isAuthSubmitting ? "Working..." : authMode === "signup" ? "Create Account" : "Sign In"}</button>
+          {authState && <p className={`rounded-xl border px-3 py-2 text-sm transition ${authState.includes("Check your email") || authState.includes("successfully") ? "border-teal-200 bg-teal-50 text-teal-800" : "border-rose-200 bg-rose-50 text-rose-700"}`} role="status">{authState}</p>}
+          <p className="text-center text-sm text-slate-600">{authMode === "signup" ? "Already have an account?" : "Need an account?"} <button onClick={() => { setAuthMode((m) => m === "signup" ? "login" : "signup"); setAuthState(""); }} className="font-semibold transition hover:underline" style={{ color: brand.accent }}>{authMode === "signup" ? "Sign in" : "Create one"}</button></p>
+        </div>
+      </div>
+    </div>}
   </div>;
 }
