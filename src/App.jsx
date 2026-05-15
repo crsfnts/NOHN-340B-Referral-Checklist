@@ -214,18 +214,16 @@ export default function App() {
       if (!mounted) return;
       setIsAuthLoading(false);
       setAuthTimeoutReached(false);
-
       if (!session?.user && event !== "SIGNED_OUT") {
         const { data: recovered } = await supabase.auth.getSession();
         if (recovered?.session?.user) {
           setSessionUser(recovered.session.user);
           return;
         }
-        return;
       }
-
-      if (event === "SIGNED_OUT") {
-        setSessionUser(null);
+      const user = session?.user || null;
+      setSessionUser(user);
+      if (!user?.id) {
         setSyncState("Sign in to access your audit dashboard.");
         return;
       }
