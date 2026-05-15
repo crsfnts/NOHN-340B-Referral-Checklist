@@ -464,7 +464,7 @@ export default function App() {
           </div>
         </div>
         <div className="relative min-h-[220px] bg-slate-900">
-          <img src="https://images.squarespace-cdn.com/content/v1/68c866063634045746ac5740/f37d7dd0-43d2-4072-b78f-a4997e91c1fa/port-angeles-wharf-2-1200x800.jpg" alt="Port Angeles waterfront and Olympic mountains at dusk" className="h-full w-full object-cover" />
+
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-900/35 to-transparent" />
           <div className="absolute bottom-0 p-6 text-white md:p-8">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-100">Port Angeles, Washington</p>
