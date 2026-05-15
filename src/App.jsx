@@ -45,6 +45,21 @@ function loadLocalPendingAudits() { try { return JSON.parse(localStorage.getItem
 const persistNotes = (notes) => localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
 const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
 
+const clearSupabaseSessionStorage = () => {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (key.startsWith("sb-") || key.includes("supabase") || key.includes("auth-token")) keysToRemove.push(key);
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
+    sessionStorage.clear();
+  } catch (error) {
+    console.log("[auth] session clear warning", error);
+  }
+};
+
 const StatusBadge = ({ status }) => <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusStyles[status] || "bg-slate-100 text-slate-700"}`}>{status}</span>;
 
 export default function App() {
@@ -54,6 +69,7 @@ export default function App() {
   const [pendingLocalAudits, setPendingLocalAudits] = useState(() => loadLocalPendingAudits());
   const [sessionUser, setSessionUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [authTimeoutReached, setAuthTimeoutReached] = useState(false);
   const [syncState, setSyncState] = useState(hasSupabaseConfig ? "Loading saved audits..." : "Supabase is not configured. Check Netlify environment variables and redeploy.");
   const [authMode, setAuthMode] = useState("login");
   const [authEmail, setAuthEmail] = useState("");
@@ -119,61 +135,123 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const initAuthAndAudits = async () => {
-      if (!supabase) {
-        setSyncState("Supabase is not configured. Check Netlify environment variables and redeploy.");
-        setIsAuthLoading(false);
-        return;
-      }
-      console.log("[sync] supabase env ready:", Boolean(import.meta.env.VITE_SUPABASE_URL), Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY));
-      const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        setSyncState("Unable to verify cloud session");
-        setIsAuthLoading(false);
-        return;
-      }
-      const user = data?.session?.user || null;
-      console.log("[sync] session exists:", Boolean(user), "user:", user?.id || "none");
-      setSessionUser(user);
-      if (user?.id) {
-        setSyncState("Loading saved audits...");
-        try {
-          const cloudAudits = await fetchSupabaseAudits(user.id);
-          setSavedAudits(cloudAudits);
-          persistAudits(cloudAudits);
-          setSyncState("Saved to cloud");
-        } catch {
-          setSyncState("Cloud load failed, showing local cache");
-        }
-      } else {
-        setSyncState("Sign in to access your audit dashboard.");
-      }
+    let mounted = true;
+    console.log("Auth init started");
+    console.log("Supabase configured:", Boolean(supabase));
+
+    const authTimeoutId = window.setTimeout(() => {
+      if (!mounted) return;
+      console.log("[auth] init timeout reached");
+      setSessionUser(null);
+      setAuthState("Session check timed out. Please sign in again.");
+      setAuthTimeoutReached(true);
       setIsAuthLoading(false);
-    };
-    initAuthAndAudits();
-    if (!supabase) return;
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      const user = session?.user || null;
-      setSessionUser(user);
-      if (!user?.id) {
-        setSavedAudits([]);
-        persistAudits([]);
-        setPendingLocalAudits([]);
-        persistLocalPendingAudits([]);
-        setSyncState("Signed out.");
-        return;
-      }
+      console.log("Auth loading false");
+    }, 7000);
+
+    const loadAuditsForUser = async (userId) => {
+      setSyncState("Loading saved audits...");
       try {
-        setSyncState("Loading saved audits...");
-        const cloudAudits = await fetchSupabaseAudits(user.id);
+        const cloudAudits = await fetchSupabaseAudits(userId);
+        if (!mounted) return;
         setSavedAudits(cloudAudits);
         persistAudits(cloudAudits);
         setSyncState("Saved to cloud");
-      } catch {
-        setSyncState("Cloud load failed, showing local cache");
+      } catch (error) {
+        console.log("[sync] cloud load failed", error);
+        if (!mounted) return;
+        setSyncState("Cloud load failed. Showing local cache.");
       }
+    };
+
+    const initAuth = async () => {
+      setIsAuthLoading(true);
+      try {
+        if (!supabase) {
+          console.warn("Supabase client missing");
+          if (mounted) {
+            setSessionUser(null);
+            setSyncState("Supabase is not configured. Check Netlify environment variables and redeploy.");
+            setAuthState("Supabase is not configured.");
+          }
+          return;
+        }
+
+        const { data, error } = await supabase.auth.getSession();
+        console.log("Session exists:", Boolean(data?.session));
+        if (error) {
+          console.error("getSession failed:", error);
+          await supabase.auth.signOut().catch(() => {});
+          clearSupabaseSessionStorage();
+          if (mounted) {
+            setSessionUser(null);
+            setAuthState("Session expired. Please sign in again.");
+            setSyncState("Sign in to access your audit dashboard.");
+          }
+          return;
+        }
+
+        const user = data?.session?.user ?? null;
+        if (mounted) {
+          setSessionUser(user);
+          setAuthTimeoutReached(false);
+          setAuthState("");
+        }
+
+        if (user?.id) {
+          await loadAuditsForUser(user.id);
+        } else if (mounted) {
+          setSyncState("Sign in to access your audit dashboard.");
+        }
+      } catch (error) {
+        console.error("Auth init crashed:", error);
+        try {
+          await supabase?.auth?.signOut();
+        } catch {}
+        clearSupabaseSessionStorage();
+        if (mounted) {
+          setSessionUser(null);
+          setAuthState("Session expired. Please sign in again.");
+          setSyncState("Sign in to access your audit dashboard.");
+        }
+      } finally {
+        if (mounted) {
+          window.clearTimeout(authTimeoutId);
+          setIsAuthLoading(false);
+          console.log("Auth init completed");
+          console.log("Auth loading false");
+        }
+      }
+    };
+
+    initAuth();
+
+    if (!supabase) {
+      return () => {
+        mounted = false;
+        window.clearTimeout(authTimeoutId);
+      };
+    }
+
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("Auth event:", event);
+      if (!mounted) return;
+      const user = session?.user || null;
+      setSessionUser(user);
+      setIsAuthLoading(false);
+      setAuthTimeoutReached(false);
+      if (!user?.id) {
+        setSyncState("Sign in to access your audit dashboard.");
+        return;
+      }
+      await loadAuditsForUser(user.id);
     });
-    return () => listener.subscription.unsubscribe();
+
+    return () => {
+      mounted = false;
+      window.clearTimeout(authTimeoutId);
+      listener?.subscription?.unsubscribe?.();
+    };
   }, []);
 
   const isQuestionVisible = (index, answers) => {
@@ -381,12 +459,23 @@ export default function App() {
   const handleSignOut = async () => {
     if (!supabase) return;
     const { error } = await supabase.auth.signOut();
+    clearSupabaseSessionStorage();
     if (error) {
       console.log("[auth] sign out failed", error);
       setAuthState(error.message || "Sign out failed.");
       return;
     }
     setAuthState("Logged out.");
+  };
+
+  const handleResetSession = async () => {
+    try {
+      await supabase?.auth?.signOut();
+    } catch (error) {
+      console.log("[auth] reset sign out warning", error);
+    }
+    clearSupabaseSessionStorage();
+    window.location.reload();
   };
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
@@ -438,7 +527,7 @@ export default function App() {
   const calendarCells = [...Array(firstWeekday).fill(null), ...[...Array(daysInMonth)].map((_, i) => i + 1)];
 
   if (isAuthLoading) {
-    return <div className="grid min-h-screen place-items-center bg-slate-100 text-slate-700"><div className="rounded-2xl bg-white px-6 py-5 text-sm shadow-sm">Loading audit dashboard...</div></div>;
+    return <div className="grid min-h-screen place-items-center bg-slate-100 text-slate-700"><div className="rounded-2xl bg-white px-6 py-5 text-sm shadow-sm"><p>Loading audit dashboard...</p><button onClick={handleResetSession} className="mt-3 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium transition hover:bg-slate-50">Reset Session</button></div></div>;
   }
 
   if (!sessionUser) {
@@ -460,6 +549,7 @@ export default function App() {
             </div>
             <button disabled={isAuthSubmitting || !authEmail || !authPassword} onClick={handleAuth} className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60" style={{ background: brand.primary }}>{isAuthSubmitting ? "Working..." : authMode === "signup" ? "Create Account" : "Sign In"}</button>
             {authState && <p className={`rounded-xl border px-3 py-2 text-sm transition ${authState.includes("Check your email") || authState.includes("successfully") ? "border-teal-200 bg-teal-50 text-teal-800" : "border-rose-200 bg-rose-50 text-rose-700"}`} role="status">{authState}</p>}
+            {(authTimeoutReached || (authState && !authState.includes("Check your email") && !authState.includes("successfully"))) && <div className="pt-1"><button onClick={handleResetSession} className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium transition hover:bg-slate-50">Reset Session</button></div>}
             <p className="pt-1 text-center text-sm text-slate-600">{authMode === "signup" ? "Already have an account?" : "Need an account?"} <button onClick={() => { setAuthMode((m) => m === "signup" ? "login" : "signup"); setAuthState(""); }} className="font-semibold transition hover:underline" style={{ color: brand.accent }}>{authMode === "signup" ? "Sign in" : "Create one"}</button></p>
           </div>
         </div>
