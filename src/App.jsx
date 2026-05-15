@@ -40,6 +40,8 @@ const getDefaultAnswers = () => AUDIT_QUESTIONS.map((q) => ({ question: q.questi
 function loadSavedAudits() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; } }
 function loadSavedNotes() { try { return JSON.parse(localStorage.getItem(NOTES_STORAGE_KEY) || "[]"); } catch { return []; } }
 const persistAudits = (audits) => localStorage.setItem(STORAGE_KEY, JSON.stringify(audits));
+const persistLocalPendingAudits = (audits) => localStorage.setItem(`${STORAGE_KEY}_pending`, JSON.stringify(audits));
+function loadLocalPendingAudits() { try { return JSON.parse(localStorage.getItem(`${STORAGE_KEY}_pending`) || "[]"); } catch { return []; } }
 const persistNotes = (notes) => localStorage.setItem(NOTES_STORAGE_KEY, JSON.stringify(notes));
 const dayKey = (value) => new Date(value).toISOString().slice(0, 10);
 
@@ -49,6 +51,9 @@ export default function App() {
   const [view, setView] = useState("Dashboard");
   const [search, setSearch] = useState("");
   const [savedAudits, setSavedAudits] = useState(() => loadSavedAudits());
+  const [pendingLocalAudits, setPendingLocalAudits] = useState(() => loadLocalPendingAudits());
+  const [sessionUser, setSessionUser] = useState(null);
+  const [syncState, setSyncState] = useState(supabase ? "Loading saved audits..." : "Cloud saving unavailable");
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [showWorkflow, setShowWorkflow] = useState(false);
@@ -66,9 +71,95 @@ export default function App() {
   const [deleteError, setDeleteError] = useState("");
   const [form, setForm] = useState({ auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() });
 
+  const toSupabaseRecord = (audit, userId) => ({
+    user_id: userId,
+    audit_number: audit.auditNumber,
+    audit_title: audit.auditTitle || "",
+    status: audit.status,
+    result: audit.status,
+    answers: audit.answers,
+    notes: audit.answers.map((a) => `${a.question}: ${a.note || ""}`).filter((s) => !s.endsWith(": ")).join("\n"),
+    completed_at: audit.completedAt || audit.updatedAt || new Date().toISOString(),
+    created_at: audit.createdAt || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  const fromSupabaseRecord = (row) => ({
+    id: row.id,
+    supabaseId: row.id,
+    auditNumber: row.audit_number,
+    auditTitle: row.audit_title || "",
+    site: "NOHN Family Health Center",
+    status: row.status,
+    answers: Array.isArray(row.answers) ? row.answers : [],
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    completedAt: row.completed_at,
+    updatedAt: row.updated_at,
+  });
+
+  const fetchSupabaseAudits = async (userId) => {
+    const { data, error } = await supabase.from("audits").select("*").eq("user_id", userId).order("completed_at", { ascending: false });
+    if (error) throw error;
+    console.log("[sync] fetched audits", data?.length ?? 0);
+    return (data || []).map(fromSupabaseRecord);
+  };
+
   useEffect(() => {
     setSavedAudits(loadSavedAudits());
+    setPendingLocalAudits(loadLocalPendingAudits());
     setNotes(loadSavedNotes());
+  }, []);
+
+  useEffect(() => {
+    const initAuthAndAudits = async () => {
+      if (!supabase) {
+        setSyncState("Cloud saving unavailable");
+        return;
+      }
+      console.log("[sync] supabase env ready:", Boolean(import.meta.env.VITE_SUPABASE_URL));
+      const { data, error } = await supabase.auth.getSession();
+      if (error) {
+        setSyncState("Unable to verify cloud session");
+        return;
+      }
+      const user = data?.session?.user || null;
+      console.log("[sync] session exists:", Boolean(user), "user:", user?.id || "none");
+      setSessionUser(user);
+      if (user?.id) {
+        setSyncState("Loading saved audits...");
+        try {
+          const cloudAudits = await fetchSupabaseAudits(user.id);
+          setSavedAudits(cloudAudits);
+          persistAudits(cloudAudits);
+          setSyncState("Saved to cloud");
+        } catch {
+          setSyncState("Cloud load failed, showing local cache");
+        }
+      } else {
+        setSyncState("Not logged in, audits are only saved on this device");
+      }
+    };
+    initAuthAndAudits();
+    if (!supabase) return;
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const user = session?.user || null;
+      setSessionUser(user);
+      if (!user?.id) {
+        setSyncState("Not logged in, audits are only saved on this device");
+        return;
+      }
+      try {
+        setSyncState("Loading saved audits...");
+        const cloudAudits = await fetchSupabaseAudits(user.id);
+        setSavedAudits(cloudAudits);
+        persistAudits(cloudAudits);
+        setSyncState("Saved to cloud");
+      } catch {
+        setSyncState("Cloud load failed, showing local cache");
+      }
+    });
+    return () => listener.subscription.unsubscribe();
   }, []);
 
   const isQuestionVisible = (index, answers) => {
@@ -102,12 +193,37 @@ export default function App() {
     return textMatch && dateMatch;
   }), [savedAudits, search, selectedDate]);
 
-  const saveAudit = (statusOverride, failReasonOverride = null) => {
+  const saveAudit = async (statusOverride, failReasonOverride = null) => {
     const now = new Date().toISOString();
     const visibleAnswers = form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers));
     const status = statusOverride || overallStatus;
     const record = { ...form, answers: visibleAnswers, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status, failReason: failReasonOverride };
-    const updated = [record, ...savedAudits]; setSavedAudits(updated); persistAudits(updated); closeWorkflow(); setView("Saved Audits");
+    const localUpdated = [record, ...savedAudits];
+    if (!sessionUser?.id || !supabase) {
+      setSavedAudits(localUpdated); persistAudits(localUpdated);
+      const pending = [record, ...pendingLocalAudits];
+      setPendingLocalAudits(pending); persistLocalPendingAudits(pending);
+      setSyncState("Not logged in, audits are only saved on this device");
+      closeWorkflow(); setView("Saved Audits");
+      return;
+    }
+    setSyncState("Saving...");
+    try {
+      const { data: inserted, error } = await supabase.from("audits").insert(toSupabaseRecord(record, sessionUser.id)).select("*").single();
+      if (error) throw error;
+      console.log("[sync] save success", inserted?.id);
+      const cloudRecord = fromSupabaseRecord(inserted);
+      const updated = [cloudRecord, ...savedAudits.filter((a) => a.auditNumber !== cloudRecord.auditNumber || a.completedAt !== cloudRecord.completedAt)];
+      setSavedAudits(updated); persistAudits(updated);
+      setSyncState("Saved to cloud");
+    } catch (e) {
+      console.log("[sync] save failed", e?.message);
+      setSavedAudits(localUpdated); persistAudits(localUpdated);
+      const pending = [record, ...pendingLocalAudits];
+      setPendingLocalAudits(pending); persistLocalPendingAudits(pending);
+      setSyncState("Cloud save failed, saved locally");
+    }
+    closeWorkflow(); setView("Saved Audits");
   };
 
   const closeWorkflow = () => {
@@ -181,6 +297,7 @@ export default function App() {
           if (userId) {
             const { error: deleteSupabaseError } = await supabase.from("audits").delete().eq("id", rowId).eq("user_id", userId);
             if (deleteSupabaseError) throw deleteSupabaseError;
+            console.log("[sync] delete success", rowId);
           }
         }
       }
@@ -192,6 +309,29 @@ export default function App() {
       setIsDeletingAudit(false);
     }
   };
+
+  useEffect(() => {
+    const migratePending = async () => {
+      if (!sessionUser?.id || !supabase || !pendingLocalAudits.length) return;
+      const existingNumbers = new Set(savedAudits.map((a) => `${a.auditNumber}::${a.completedAt || a.updatedAt}`));
+      const toMigrate = pendingLocalAudits.filter((a) => !existingNumbers.has(`${a.auditNumber}::${a.completedAt || a.updatedAt}`));
+      if (!toMigrate.length) {
+        setPendingLocalAudits([]);
+        persistLocalPendingAudits([]);
+        return;
+      }
+      try {
+        await supabase.from("audits").insert(toMigrate.map((a) => toSupabaseRecord(a, sessionUser.id)));
+        const cloud = await fetchSupabaseAudits(sessionUser.id);
+        setSavedAudits(cloud); persistAudits(cloud);
+        setPendingLocalAudits([]); persistLocalPendingAudits([]);
+        setSyncState("Saved to cloud");
+      } catch {
+        setSyncState("Cloud save failed, saved locally");
+      }
+    };
+    migratePending();
+  }, [sessionUser?.id, pendingLocalAudits.length]);
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
   const handleDecision = (answer) => {
@@ -247,7 +387,7 @@ export default function App() {
         <nav className="space-y-2">{navItems.map((item) => <button key={item} onClick={() => setView(item)} className="w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-700" style={view === item ? { background: brand.accent } : {}}>{item}</button>)}</nav>
       </aside>
       <main>
-        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div></header>
+        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div><p className="mt-2 text-xs text-slate-500">{syncState}</p></header>
 
         <div className="p-4 md:p-6">{view === "Dashboard" && <div className="grid gap-4 xl:grid-cols-[1fr_290px]">
           <section className="space-y-4"><div className="rounded-2xl bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{new Date().toLocaleDateString()}</p><h2 className="text-2xl font-bold" style={{ color: brand.primary }}>Audit Activity Overview</h2></div>
