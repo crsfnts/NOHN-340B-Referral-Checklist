@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "./lib/supabaseClient";
 
 const STORAGE_KEY = "nohn_340b_saved_audits_v3";
 const NOTES_STORAGE_KEY = "nohn_340b_notes_v2";
@@ -60,6 +61,9 @@ export default function App() {
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [noteTitle, setNoteTitle] = useState("");
   const [failContext, setFailContext] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [isDeletingAudit, setIsDeletingAudit] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [form, setForm] = useState({ auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() });
 
   useEffect(() => {
@@ -155,6 +159,40 @@ export default function App() {
     link.download = `NOHN_340B_Audits_${new Date().toISOString().slice(0, 10)}.xlsx`; link.click(); URL.revokeObjectURL(link.href);
   };
 
+  const removeAuditFromState = (auditId) => {
+    const updated = savedAudits.filter((audit) => audit.id !== auditId);
+    setSavedAudits(updated);
+    persistAudits(updated);
+    setSelectedAudit((prev) => (prev?.id === auditId ? null : prev));
+  };
+
+  const deleteAudit = async () => {
+    if (!deleteTarget || isDeletingAudit) return;
+    setDeleteError("");
+    setIsDeletingAudit(true);
+    try {
+      if (supabase) {
+        const rowId = deleteTarget.supabaseId || deleteTarget.id;
+        const isLikelySupabaseRow = typeof rowId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rowId);
+        if (isLikelySupabaseRow) {
+          const { data: authData, error: authError } = await supabase.auth.getUser();
+          if (authError) throw authError;
+          const userId = authData?.user?.id;
+          if (userId) {
+            const { error: deleteSupabaseError } = await supabase.from("audits").delete().eq("id", rowId).eq("user_id", userId);
+            if (deleteSupabaseError) throw deleteSupabaseError;
+          }
+        }
+      }
+      removeAuditFromState(deleteTarget.id);
+      setDeleteTarget(null);
+    } catch {
+      setDeleteError("Could not delete audit. Please try again.");
+    } finally {
+      setIsDeletingAudit(false);
+    }
+  };
+
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
   const handleDecision = (answer) => {
     if (isAdvancing) return;
@@ -227,7 +265,7 @@ export default function App() {
         </div>}
 
         {view === "Saved Audits" && <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr]"><section className="rounded-2xl bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><h2 className="text-xl font-bold">Saved Audits</h2><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel(filteredAudits)}>Export to Excel</button></div>
-          <div className="space-y-1">{filteredAudits.map((audit) => <button key={audit.id} onClick={() => setSelectedAudit((prev) => prev?.id === audit.id ? null : audit)} className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition hover:bg-slate-50"><div className="flex items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Failed" ? "#e11d48" : audit.status === "Passed" ? "#14b8a6" : "#f59e0b" }} /><div><p className="text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button>)}</div>
+          <div className="space-y-1">{filteredAudits.map((audit) => <div key={audit.id} className="flex items-center gap-2 rounded-xl px-1 py-1 transition hover:bg-slate-50"><button onClick={() => setSelectedAudit((prev) => prev?.id === audit.id ? null : audit)} className="flex min-w-0 flex-1 items-center justify-between rounded-xl px-2 py-2 text-left"><div className="flex min-w-0 items-start gap-3"><span className="mt-1 inline-block h-2.5 w-2.5 rounded-full" style={{ background: audit.status === "Failed" ? "#e11d48" : audit.status === "Passed" ? "#14b8a6" : "#f59e0b" }} /><div className="min-w-0"><p className="truncate text-sm font-semibold">{audit.auditNumber} — {audit.auditTitle || "Untitled"}</p><p className="truncate text-xs text-slate-500">{new Date(audit.completedAt || audit.updatedAt).toLocaleString()} • {audit.site}</p></div></div><StatusBadge status={audit.status} /></button><button onClick={() => { setDeleteError(""); setDeleteTarget(audit); }} className="rounded-md p-2 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600" aria-label={`Delete ${audit.auditNumber}`}><span aria-hidden="true" className="text-sm leading-none">🗑️</span></button></div>)}</div>
         </section>
         <section className="rounded-2xl bg-white p-4 shadow-sm"><h3 className="mb-3 text-lg font-semibold">Audit Timeline</h3>{selectedAudit ? <div className="space-y-3 animate-fade-in">{selectedAudit.failReason && <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"><strong>Failure trigger:</strong> {selectedAudit.failReason.question} — <strong>{selectedAudit.failReason.answer}</strong></div>}{selectedAudit.answers.map((a, idx) => <div key={`${selectedAudit.id}-${idx}`} className="relative rounded-xl border border-slate-200 bg-slate-50 p-3 pl-6"><span className="absolute left-2 top-4 h-2 w-2 rounded-full" style={{ background: a.answer === "No" ? "#e11d48" : "#14b8a6" }} /><p className="text-xs text-slate-500">Question {idx + 1}</p><p className="text-sm font-semibold">{a.question}</p><p className="text-sm">Answer: <strong>{a.answer || "—"}</strong></p><p className="text-xs text-slate-600">Notes: {a.note || "—"}</p></div>)}</div> : <p className="text-sm text-slate-500">Select an audit to view timeline history.</p>}</section></div>}
 
@@ -242,5 +280,7 @@ export default function App() {
       <div className="mt-4 rounded-xl p-3" style={{ background: brand.soft }}><p className="text-sm font-medium" style={{ color: brand.primary }}>Question {Math.min(answeredCount + 1, askedCount)} of {askedCount}</p><div className="mt-2 h-2 rounded-full bg-white"><div className="h-2 rounded-full transition-all duration-300" style={{ background: brand.accent, width: `${askedCount ? (answeredCount / askedCount) * 100 : 0}%` }} /></div></div>
       {!complete && !failContext ? <div className={`mt-4 rounded-2xl border p-4 transition duration-200 ${isAdvancing ? "translate-x-1 opacity-80" : "opacity-100"}`}><p className="text-lg font-semibold animate-fade-in">{currentQuestion.question}</p><div className="mt-4 flex gap-2"><button onClick={() => handleDecision("Yes")} className="rounded-full border border-teal-200 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 transition hover:-translate-y-0.5 active:scale-95">Yes</button><button onClick={() => handleDecision("No")} className="rounded-full border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-800 transition hover:-translate-y-0.5 active:scale-95">No</button></div><textarea value={currentQuestion.note} onChange={(e) => setForm((prev) => { const answers = [...prev.answers]; answers[questionIndex] = { ...answers[questionIndex], note: e.target.value }; return { ...prev, answers }; })} placeholder="Optional notes / follow-up" className="mt-3 w-full rounded-xl border p-3 text-sm" /></div> : failContext ? <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold text-rose-900">Audit Failed</h4><p className="mb-2 text-sm">Status: <StatusBadge status="Failed" /></p><div className="space-y-1 text-sm"><p><strong>Audit:</strong> {form.auditNumber} — {form.auditTitle || "Untitled Audit"}</p><p><strong>Date:</strong> {new Date().toLocaleString()}</p><p><strong>Failed Question:</strong> {failContext.question}</p><p><strong>Answer:</strong> {failContext.answer}</p></div><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white" style={{ background: brand.primary }} onClick={() => saveAudit("Failed", failContext)}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((a) => a.answer), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: "Failed", failReason: failContext }])}>Export to Excel</button></div></div> : <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-4 animate-complete-pop"><h4 className="text-lg font-bold">Audit Complete</h4><p className="text-sm">Status: <StatusBadge status={overallStatus} /></p><div className="mt-3 flex gap-2"><button className="rounded-lg px-3 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }} onClick={() => saveAudit(overallStatus)}>Save Audit</button><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => exportAuditsToExcel([{ ...form, answers: form.answers.filter((_, idx) => isQuestionVisible(idx, form.answers)), createdAt: new Date().toISOString(), completedAt: new Date().toISOString(), status: overallStatus }])}>Export to Excel</button></div></div>}
     </div></div>}
+
+    {deleteTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm animate-fade-in"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl animate-modal-in"><h3 className="text-lg font-semibold" style={{ color: brand.primary }}>Delete audit?</h3><p className="mt-2 text-sm text-slate-600">Are you sure you want to delete this audit? This action cannot be undone.</p>{deleteError && <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{deleteError}</p>}<div className="mt-4 flex items-center justify-end gap-2"><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => { if (!isDeletingAudit) { setDeleteTarget(null); setDeleteError(""); } }} disabled={isDeletingAudit}>Cancel</button><button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-70" onClick={deleteAudit} disabled={isDeletingAudit}>{isDeletingAudit ? "Deleting..." : "Delete Audit"}</button></div></div></div>}
   </div>;
 }
