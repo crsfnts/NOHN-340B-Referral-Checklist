@@ -127,12 +127,11 @@ export default function App() {
     const authTimeoutId = window.setTimeout(() => {
       if (!mounted) return;
       console.log("[auth] init timeout reached");
-      setSessionUser(null);
-      setAuthState("Session check timed out. Please sign in again.");
+      setAuthState("Session check is taking longer than expected. Please wait or try reset.");
       setAuthTimeoutReached(true);
       setIsAuthLoading(false);
       console.log("Auth loading false");
-    }, 7000);
+    }, 10000);
 
     const loadAuditsForUser = async (userId) => {
       setSyncState("Loading saved audits...");
@@ -228,6 +227,10 @@ export default function App() {
         setSyncState("Sign in to access your audit dashboard.");
         return;
       }
+
+      const user = session?.user || null;
+      if (!user?.id) return;
+      setSessionUser(user);
       await loadAuditsForUser(user.id);
     });
 
