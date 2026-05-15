@@ -28,3 +28,5 @@ Publish directory:
 ```bash
 dist
 ```
+
+After adding or changing Netlify environment variables, redeploy the site. Vite reads `VITE_*` variables during build, not at runtime.

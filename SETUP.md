@@ -16,6 +16,8 @@ In **Site configuration → Environment variables**, add:
 
 Then redeploy.
 
+Important: Vite injects environment variables at build time. After adding or changing any `VITE_*` variable in Netlify, you must trigger a new deploy for the app to read updated values.
+
 ## Security reminders
 - Do **not** use your database password in frontend code.
 - Do **not** use your Supabase service role key in frontend code.

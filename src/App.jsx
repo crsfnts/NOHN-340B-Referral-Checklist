@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "./lib/supabaseClient";
+import { hasSupabaseConfig, supabase } from "./lib/supabaseClient";
 
 const STORAGE_KEY = "nohn_340b_saved_audits_v3";
 const NOTES_STORAGE_KEY = "nohn_340b_notes_v2";
@@ -53,7 +53,13 @@ export default function App() {
   const [savedAudits, setSavedAudits] = useState(() => loadSavedAudits());
   const [pendingLocalAudits, setPendingLocalAudits] = useState(() => loadLocalPendingAudits());
   const [sessionUser, setSessionUser] = useState(null);
-  const [syncState, setSyncState] = useState(supabase ? "Loading saved audits..." : "Cloud saving unavailable");
+  const [syncState, setSyncState] = useState(hasSupabaseConfig ? "Loading saved audits..." : "Supabase is not configured. Check Netlify environment variables and redeploy.");
+  const [authMode, setAuthMode] = useState("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authState, setAuthState] = useState("");
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [debugResult, setDebugResult] = useState("");
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [showWorkflow, setShowWorkflow] = useState(false);
@@ -99,7 +105,7 @@ export default function App() {
   });
 
   const fetchSupabaseAudits = async (userId) => {
-    const { data, error } = await supabase.from("audits").select("*").eq("user_id", userId).order("completed_at", { ascending: false });
+    const { data, error } = await supabase.from("audits").select("*").eq("user_id", userId).order("created_at", { ascending: false });
     if (error) throw error;
     console.log("[sync] fetched audits", data?.length ?? 0);
     return (data || []).map(fromSupabaseRecord);
@@ -114,10 +120,10 @@ export default function App() {
   useEffect(() => {
     const initAuthAndAudits = async () => {
       if (!supabase) {
-        setSyncState("Cloud saving unavailable");
+        setSyncState("Supabase is not configured. Check Netlify environment variables and redeploy.");
         return;
       }
-      console.log("[sync] supabase env ready:", Boolean(import.meta.env.VITE_SUPABASE_URL));
+      console.log("[sync] supabase env ready:", Boolean(import.meta.env.VITE_SUPABASE_URL), Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY));
       const { data, error } = await supabase.auth.getSession();
       if (error) {
         setSyncState("Unable to verify cloud session");
@@ -137,7 +143,7 @@ export default function App() {
           setSyncState("Cloud load failed, showing local cache");
         }
       } else {
-        setSyncState("Not logged in, audits are only saved on this device");
+        setSyncState("Log in to save audits across devices.");
       }
     };
     initAuthAndAudits();
@@ -146,7 +152,7 @@ export default function App() {
       const user = session?.user || null;
       setSessionUser(user);
       if (!user?.id) {
-        setSyncState("Not logged in, audits are only saved on this device");
+        setSyncState("Log in to save audits across devices.");
         return;
       }
       try {
@@ -203,7 +209,7 @@ export default function App() {
       setSavedAudits(localUpdated); persistAudits(localUpdated);
       const pending = [record, ...pendingLocalAudits];
       setPendingLocalAudits(pending); persistLocalPendingAudits(pending);
-      setSyncState("Not logged in, audits are only saved on this device");
+      setSyncState("Not logged in — saved on this device only.");
       closeWorkflow(); setView("Saved Audits");
       return;
     }
@@ -216,12 +222,12 @@ export default function App() {
       const updated = [cloudRecord, ...savedAudits.filter((a) => a.auditNumber !== cloudRecord.auditNumber || a.completedAt !== cloudRecord.completedAt)];
       setSavedAudits(updated); persistAudits(updated);
       setSyncState("Saved to cloud");
-    } catch (e) {
-      console.log("[sync] save failed", e?.message);
+      } catch (e) {
       setSavedAudits(localUpdated); persistAudits(localUpdated);
       const pending = [record, ...pendingLocalAudits];
       setPendingLocalAudits(pending); persistLocalPendingAudits(pending);
-      setSyncState("Cloud save failed, saved locally");
+      console.log("[sync] save failed", e);
+      setSyncState("Cloud save failed, saved locally.");
     }
     closeWorkflow(); setView("Saved Audits");
   };
@@ -326,12 +332,74 @@ export default function App() {
         setSavedAudits(cloud); persistAudits(cloud);
         setPendingLocalAudits([]); persistLocalPendingAudits([]);
         setSyncState("Saved to cloud");
-      } catch {
-        setSyncState("Cloud save failed, saved locally");
+      } catch (error) {
+        console.log("[sync] pending migration failed", error);
+        setSyncState("Cloud save failed, saved locally.");
       }
     };
     migratePending();
   }, [sessionUser?.id, pendingLocalAudits.length]);
+
+  const handleAuth = async () => {
+    if (!supabase) {
+      setAuthState("Supabase is not configured. Check Netlify environment variables and redeploy.");
+      return;
+    }
+    setIsAuthSubmitting(true);
+    setAuthState("");
+    try {
+      if (authMode === "signup") {
+        const { error } = await supabase.auth.signUp({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        setAuthState("Sign-up submitted. Check your email if confirmation is required.");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+        if (error) throw error;
+        setAuthState("Logged in.");
+      }
+    } catch (error) {
+      console.log("[auth] failed", error);
+      setAuthState(error?.message || "Authentication failed.");
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      console.log("[auth] sign out failed", error);
+      setAuthState(error.message || "Sign out failed.");
+      return;
+    }
+    setAuthState("Logged out.");
+  };
+
+  const testSupabaseConnection = async () => {
+    const envReady = Boolean(import.meta.env.VITE_SUPABASE_URL) && Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
+    if (!envReady) {
+      setDebugResult("Env check failed: missing URL or key.");
+      return;
+    }
+    if (!supabase) {
+      setDebugResult("Supabase client is not initialized.");
+      return;
+    }
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    if (userError) {
+      console.log("[debug] auth error", userError);
+      setDebugResult(`Session check failed: ${userError.message}`);
+      return;
+    }
+    const { error: selectError } = await supabase.from("audits").select("id", { count: "exact", head: true });
+    if (selectError) {
+      console.log("[debug] select error", selectError);
+      setDebugResult(`DB test failed: ${selectError.message}`);
+      return;
+    }
+    setDebugResult(`Success. User: ${userData?.user?.email || "none"}; table access OK.`);
+  };
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
   const handleDecision = (answer) => {
@@ -387,7 +455,25 @@ export default function App() {
         <nav className="space-y-2">{navItems.map((item) => <button key={item} onClick={() => setView(item)} className="w-full rounded-xl px-3 py-2 text-left text-sm transition hover:bg-slate-700" style={view === item ? { background: brand.accent } : {}}>{item}</button>)}</nav>
       </aside>
       <main>
-        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div><p className="mt-2 text-xs text-slate-500">{syncState}</p></header>
+        <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div><p className="mt-2 text-xs text-slate-500">{syncState}</p>
+          <div className="mt-3 rounded-xl border bg-white p-3">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-semibold">{sessionUser?.email ? `Logged in: ${sessionUser.email}` : "Log in to save audits across devices."}</span>
+              {sessionUser && <button onClick={handleSignOut} className="rounded border px-2 py-1">Log out</button>}
+            </div>
+            {!sessionUser && <div className="flex flex-wrap items-center gap-2">
+              <select value={authMode} onChange={(e) => setAuthMode(e.target.value)} className="rounded border px-2 py-1 text-xs"><option value="login">Log in</option><option value="signup">Sign up</option></select>
+              <input value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="Email" className="rounded border px-2 py-1 text-xs" />
+              <input value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Password" type="password" className="rounded border px-2 py-1 text-xs" />
+              <button disabled={isAuthSubmitting} onClick={handleAuth} className="rounded border px-2 py-1 text-xs">{isAuthSubmitting ? "Working..." : (authMode === "signup" ? "Sign up" : "Log in")}</button>
+            </div>}
+            {authState && <p className="mt-2 text-xs text-slate-600">{authState}</p>}
+            <div className="mt-2">
+              <button onClick={testSupabaseConnection} className="rounded border px-2 py-1 text-xs">Test Supabase Connection</button>
+              {debugResult && <p className="mt-1 text-xs text-slate-600">{debugResult}</p>}
+            </div>
+          </div>
+        </header>
 
         <div className="p-4 md:p-6">{view === "Dashboard" && <div className="grid gap-4 xl:grid-cols-[1fr_290px]">
           <section className="space-y-4"><div className="rounded-2xl bg-white p-5 shadow-sm"><p className="text-sm text-slate-500">{new Date().toLocaleDateString()}</p><h2 className="text-2xl font-bold" style={{ color: brand.primary }}>Audit Activity Overview</h2></div>
