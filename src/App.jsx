@@ -61,7 +61,7 @@ export default function App() {
   const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [isClosingAuthModal, setIsClosingAuthModal] = useState(false);
-  const [debugResult, setDebugResult] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [selectedAudit, setSelectedAudit] = useState(null);
   const [selectedDate, setSelectedDate] = useState("");
   const [showWorkflow, setShowWorkflow] = useState(false);
@@ -208,6 +208,7 @@ export default function App() {
     const record = { ...form, answers: visibleAnswers, id: `${form.auditNumber}-${now}`, createdAt: now, completedAt: now, updatedAt: now, status, failReason: failReasonOverride };
     const localUpdated = [record, ...savedAudits];
     if (!sessionUser?.id || !supabase) {
+      setIsAuthModalOpen(true);
       setSavedAudits(localUpdated); persistAudits(localUpdated);
       const pending = [record, ...pendingLocalAudits];
       setPendingLocalAudits(pending); persistLocalPendingAudits(pending);
@@ -375,6 +376,7 @@ export default function App() {
   const openAuthModal = (mode = "login") => {
     setAuthMode(mode);
     setAuthState("");
+    setShowPassword(false);
     setIsAuthModalOpen(true);
   };
 
@@ -396,31 +398,6 @@ export default function App() {
       return;
     }
     setAuthState("Logged out.");
-  };
-
-  const testSupabaseConnection = async () => {
-    const envReady = Boolean(import.meta.env.VITE_SUPABASE_URL) && Boolean(import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY);
-    if (!envReady) {
-      setDebugResult("Env check failed: missing URL or key.");
-      return;
-    }
-    if (!supabase) {
-      setDebugResult("Supabase client is not initialized.");
-      return;
-    }
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError) {
-      console.log("[debug] auth error", userError);
-      setDebugResult(`Session check failed: ${userError.message}`);
-      return;
-    }
-    const { error: selectError } = await supabase.from("audits").select("id", { count: "exact", head: true });
-    if (selectError) {
-      console.log("[debug] select error", selectError);
-      setDebugResult(`DB test failed: ${selectError.message}`);
-      return;
-    }
-    setDebugResult(`Success. User: ${userData?.user?.email || "none"}; table access OK.`);
   };
 
   const currentQuestion = form.answers[questionIndex]; const complete = questionIndex >= AUDIT_QUESTIONS.length;
@@ -487,17 +464,11 @@ export default function App() {
       </aside>
       <main>
         <header className="border-b bg-white/90 px-4 py-4 backdrop-blur md:px-6"><div className="flex flex-wrap items-center gap-3"><h1 className="text-lg font-semibold">NOHN 340B Audit Dashboard</h1><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search saved audits" className="w-full max-w-xl min-w-[220px] flex-1 rounded-xl border px-3 py-2" /><button onClick={() => { const fresh = { auditNumber: createAuditNumber(), auditTitle: "", site: SITES[0], answers: getDefaultAnswers() }; setForm(fresh); setQuestionIndex(nextVisibleQuestionIndex(0, fresh.answers)); setFailContext(null); setShowWorkflow(true); }} className="rounded-xl px-4 py-2 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.98]" style={{ background: brand.primary }}>New Audit</button></div><p className="mt-2 text-xs text-slate-500">{syncState}</p>
-          <div className="mt-3 rounded-xl border bg-white p-3">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-semibold">{sessionUser?.email ? `Signed in as ${sessionUser.email}` : "Sign in to save audits across devices."}</span>
-              {sessionUser ? <button onClick={handleSignOut} className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium transition hover:bg-slate-50">Sign Out</button> : <button onClick={() => openAuthModal("login")} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }}>Sign In to Save</button>}
-            </div>
-            {authState && sessionUser && <p className="mt-2 text-xs text-slate-600">{authState}</p>}
-            <div className="mt-2">
-              <button onClick={testSupabaseConnection} className="rounded border px-2 py-1 text-xs">Test Supabase Connection</button>
-              {debugResult && <p className="mt-1 text-xs text-slate-600">{debugResult}</p>}
-            </div>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs">
+            <p className="text-slate-600">{sessionUser?.email ? <span className="font-medium text-slate-700">Signed in as {sessionUser.email}</span> : "Save audits across devices by signing in."}</p>
+            {sessionUser ? <button onClick={handleSignOut} className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium transition hover:bg-slate-50">Sign Out</button> : <button onClick={() => openAuthModal("login")} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white transition hover:-translate-y-0.5 active:scale-95" style={{ background: brand.primary }}>Sign In to Save</button>}
           </div>
+          {authState && sessionUser && <p className="mt-2 text-xs text-slate-600">{authState}</p>}
         </header>
 
         <div className="p-4 md:p-6">{view === "Dashboard" && <div className="grid gap-4 xl:grid-cols-[1fr_290px]">
@@ -533,24 +504,39 @@ export default function App() {
     </div></div>}
 
     {deleteTarget && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm animate-fade-in"><div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl animate-modal-in"><h3 className="text-lg font-semibold" style={{ color: brand.primary }}>Delete audit?</h3><p className="mt-2 text-sm text-slate-600">Are you sure you want to delete this audit? This action cannot be undone.</p>{deleteError && <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{deleteError}</p>}<div className="mt-4 flex items-center justify-end gap-2"><button className="rounded-lg border px-3 py-2 text-sm transition active:scale-95" onClick={() => { if (!isDeletingAudit) { setDeleteTarget(null); setDeleteError(""); } }} disabled={isDeletingAudit}>Cancel</button><button className="rounded-lg bg-rose-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-70" onClick={deleteAudit} disabled={isDeletingAudit}>{isDeletingAudit ? "Deleting..." : "Delete Audit"}</button></div></div></div>}
-    {isAuthModalOpen && <div className={`fixed inset-0 z-[70] grid place-items-center bg-slate-900/45 p-4 backdrop-blur-sm ${isClosingAuthModal ? "animate-fade-out" : "animate-fade-in"}`} onMouseDown={(e) => { if (e.target === e.currentTarget) closeAuthModal(); }}>
-      <div className={`w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl ${isClosingAuthModal ? "animate-modal-out" : "animate-modal-in"}`} role="dialog" aria-modal="true" aria-labelledby="auth-title">
-        <div className="mb-5 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: brand.accent }}>NOHN 340B Audit Checklist</p>
-            <h2 id="auth-title" className="mt-1 text-2xl font-bold" style={{ color: brand.primary }}>{authMode === "signup" ? "Create your account" : "Welcome back"}</h2>
-            <p className="mt-1 text-sm text-slate-500">Log in to save audits across devices.</p>
+    {isAuthModalOpen && <div className={`fixed inset-0 z-[70] grid place-items-center bg-slate-950/50 p-4 backdrop-blur-sm ${isClosingAuthModal ? "animate-fade-out" : "animate-fade-in"}`} onMouseDown={(e) => { if (e.target === e.currentTarget) closeAuthModal(); }}>
+      <div className={`w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl ${isClosingAuthModal ? "animate-modal-out" : "animate-modal-in"}`} role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <div className="grid md:grid-cols-2">
+          <div className="p-6 md:p-8">
+            <div className="mb-6 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: brand.accent }}>NOHN 340B Audit Checklist</p>
+                <h2 id="auth-title" className="mt-2 text-3xl font-bold" style={{ color: brand.primary }}>{authMode === "signup" ? "Create Your Account" : "Welcome Back"}</h2>
+                <p className="mt-2 text-sm text-slate-500">{authMode === "signup" ? "Create an account to securely save and access audits anywhere." : "Sign in to save audits and access them across devices."}</p>
+              </div>
+              <button onClick={closeAuthModal} disabled={isAuthSubmitting} className="rounded-lg border px-2.5 py-1 text-xs font-semibold transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">Close</button>
+            </div>
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-slate-700" htmlFor="auth-email">Email</label>
+              <input id="auth-email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="name@nohn.org" className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
+              <label className="block text-sm font-medium text-slate-700" htmlFor="auth-password">Password</label>
+              <div className="relative">
+                <input id="auth-password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Enter password" type={showPassword ? "text" : "password"} className="w-full rounded-xl border border-slate-300 px-3 py-2.5 pr-16 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
+                <button type="button" onClick={() => setShowPassword((prev) => !prev)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100">{showPassword ? "Hide" : "Show"}</button>
+              </div>
+              <button disabled={isAuthSubmitting || !authEmail || !authPassword} onClick={handleAuth} className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60" style={{ background: brand.primary }}>{isAuthSubmitting ? "Working..." : authMode === "signup" ? "Create Account" : "Sign In"}</button>
+              {authState && <p className={`rounded-xl border px-3 py-2 text-sm transition ${authState.includes("Check your email") || authState.includes("successfully") ? "border-teal-200 bg-teal-50 text-teal-800" : "border-rose-200 bg-rose-50 text-rose-700"}`} role="status">{authState}</p>}
+              <p className="pt-1 text-center text-sm text-slate-600">{authMode === "signup" ? "Already have an account?" : "Need an account?"} <button onClick={() => { setAuthMode((m) => m === "signup" ? "login" : "signup"); setAuthState(""); }} className="font-semibold transition hover:underline" style={{ color: brand.accent }}>{authMode === "signup" ? "Sign in" : "Create one"}</button></p>
+            </div>
           </div>
-          <button onClick={closeAuthModal} disabled={isAuthSubmitting} className="rounded-lg border px-2.5 py-1 text-xs font-semibold transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">Close</button>
-        </div>
-        <div className="space-y-3">
-          <label className="block text-sm font-medium text-slate-700" htmlFor="auth-email">Email</label>
-          <input id="auth-email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} placeholder="name@nohn.org" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
-          <label className="block text-sm font-medium text-slate-700" htmlFor="auth-password">Password</label>
-          <input id="auth-password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} placeholder="Enter password" type="password" className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm transition focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-100" />
-          <button disabled={isAuthSubmitting || !authEmail || !authPassword} onClick={handleAuth} className="mt-1 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition hover:-translate-y-0.5 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60" style={{ background: brand.primary }}>{isAuthSubmitting ? "Working..." : authMode === "signup" ? "Create Account" : "Sign In"}</button>
-          {authState && <p className={`rounded-xl border px-3 py-2 text-sm transition ${authState.includes("Check your email") || authState.includes("successfully") ? "border-teal-200 bg-teal-50 text-teal-800" : "border-rose-200 bg-rose-50 text-rose-700"}`} role="status">{authState}</p>}
-          <p className="text-center text-sm text-slate-600">{authMode === "signup" ? "Already have an account?" : "Need an account?"} <button onClick={() => { setAuthMode((m) => m === "signup" ? "login" : "signup"); setAuthState(""); }} className="font-semibold transition hover:underline" style={{ color: brand.accent }}>{authMode === "signup" ? "Sign in" : "Create one"}</button></p>
+          <div className="relative min-h-[220px] bg-slate-900">
+            <img src="https://images.unsplash.com/photo-1521295121783-8a321d551ad2?auto=format&fit=crop&w=1600&q=80" alt="Port Angeles waterfront and Olympic mountains at dusk" className="h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-900/35 to-transparent" />
+            <div className="absolute bottom-0 p-6 text-white md:p-8">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-100">Port Angeles, Washington</p>
+              <p className="mt-2 max-w-xs text-sm text-slate-100">Supporting consistent, compliant 340B audits across every NOHN care location.</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>}
