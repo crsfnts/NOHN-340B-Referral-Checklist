@@ -10,7 +10,8 @@
     "vite": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "@supabase/supabase-js": "^2.57.0"
+    "@supabase/supabase-js": "^2.57.0",
+    "@supabase/supabase-js": "^2.39.0"
   },
   "devDependencies": {
     "tailwindcss": "^3.4.17",
