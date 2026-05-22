@@ -1,746 +1,645 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   LayoutDashboard, FileCheck, FolderOpen, FileText, Settings, LogOut, 
   ChevronRight, ChevronLeft, CheckCircle, XCircle, AlertTriangle, 
   Clock, Search, Filter, Download, User, Calendar, Plus, Save,
-  AlertCircle, Eye, Copy, Trash2, Edit3, ShieldAlert
+  Eye, Copy, Trash2, Edit3, ShieldAlert
 } from 'lucide-react';
 
-// --- MOCK DATABASE (Used for preview environment) ---
-const MOCK_USERS = [
-  { id: '1', email: 'admin@nohn.org', password: 'password', role: 'admin', full_name: 'Admin User' },
-  { id: '2', email: 'auditor@nohn.org', password: 'password', role: 'auditor', full_name: 'Jane Auditor' }
-];
-
-const INITIAL_MOCK_AUDITS = [
-  {
-    id: 'A-2023-001',
-    internal_ref: 'RX-99281',
-    date_created: '2023-10-25T10:00:00Z',
-    completed_at: '2023-10-25T10:30:00Z',
-    auditor_id: '2',
-    auditor_name: 'Jane Auditor',
-    status: 'passed',
-    notes: 'Routine check, all clear.',
-    responses: { q1: 'yes', q2: 'yes', q3: 'yes', q4: 'yes' },
-    failed_checks: 0
-  },
-  {
-    id: 'A-2023-002',
-    internal_ref: 'RX-77342',
-    date_created: '2023-10-26T14:00:00Z',
-    completed_at: '2023-10-26T14:15:00Z',
-    auditor_id: '2',
-    auditor_name: 'Jane Auditor',
-    status: 'failed',
-    notes: 'Missing referral documentation.',
-    responses: { q1: 'yes', q2: 'no', q3: 'yes' },
-    failed_checks: 1
+// --- SUPABASE SETUP ---
+// This safely checks for your Vercel database keys. 
+// If they aren't there yet, the app won't crash—it will just use mock data!
+let supabase = null;
+try {
+  // We use standard try/catch to prevent compile errors in restricted environments
+  const supabaseUrl = typeof import.meta !== 'undefined' ? import.meta.env.VITE_SUPABASE_URL : '';
+  const supabaseAnonKey = typeof import.meta !== 'undefined' ? import.meta.env.VITE_SUPABASE_ANON_KEY : '';
+  
+  if (supabaseUrl && supabaseAnonKey) {
+    // If you've run npm install @supabase/supabase-js, uncomment the line below in your final repo:
+    // import { createClient } from '@supabase/supabase-js';
+    // supabase = createClient(supabaseUrl, supabaseAnonKey);
   }
+} catch (e) {
+  console.log("Supabase not fully configured yet, using local mock mode.");
+}
+
+// --- MOCK DATA ---
+const MOCK_USER = { id: '1', email: 'auditor@nohn.org', full_name: 'NOHN Auditor' };
+const MOCK_AUDITS = [
+  { id: '1001', date: '2026-05-20', status: 'Passed', auditor: 'Sarah Jenkins', failed_checks: 0, notes: 'Routine check.' },
+  { id: '1002', date: '2026-05-21', status: 'Failed', auditor: 'Mark Ruffalo', failed_checks: 2, notes: 'No valid referral found.' },
+  { id: '1003', date: '2026-05-22', status: 'Needs Review', auditor: 'Sarah Jenkins', failed_checks: 1, notes: 'Pending provider confirmation.' },
 ];
 
-const AUDIT_QUESTIONS = [
-  { id: 'q1', text: 'Is the patient an established NOHN patient?', critical: true },
-  { id: 'q2', text: 'Was the patient seen by a NOHN provider or eligible referral provider?', critical: true },
-  { id: 'q3', text: 'Is the encounter documented in the medical record?', critical: true },
-  { id: 'q4', text: 'Does the prescription originate from an eligible encounter?', critical: true },
-  { id: 'q5', text: 'Was the prescription written by an eligible provider?', critical: false },
-  { id: 'q6', text: 'Is there a valid referral, if applicable?', critical: false, dependsOn: 'q2', expectedValue: 'yes' },
-  { id: 'q7', text: 'Is the drug eligible for 340B capture?', critical: true },
-  { id: 'q8', text: 'Was the prescription filled at an eligible contract pharmacy or in-house pharmacy?', critical: true }
-];
-
-const App = () => {
+export default function App() {
+  // State
   const [session, setSession] = useState(null);
-  const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [audits, setAudits] = useState(INITIAL_MOCK_AUDITS);
-  const [isLoading, setIsLoading] = useState(true);
+  const [currentView, setCurrentView] = useState('login'); // login, dashboard, new, saved, reports, settings
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  
+  // Dashboard & Audit State
+  const [audits, setAudits] = useState(MOCK_AUDITS);
+  const [currentAudit, setCurrentAudit] = useState(null);
 
-  // Load session from local storage on mount (Mock behavior)
+  // Auto-login check (mocked for UI demo)
   useEffect(() => {
-    const storedUser = localStorage.getItem('nohn_user');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-      setSession({ access_token: 'mock_token' });
+    const savedSession = localStorage.getItem('nohn_session');
+    if (savedSession) {
+      setSession(JSON.parse(savedSession));
+      setCurrentView('dashboard');
     }
-    
-    const storedAudits = localStorage.getItem('nohn_audits');
-    if (storedAudits) {
-        setAudits(JSON.parse(storedAudits));
-    }
-    
-    setIsLoading(false);
   }, []);
 
-  const handleLogin = (email, password) => {
-    const foundUser = MOCK_USERS.find(u => u.email === email && u.password === password);
-    if (foundUser) {
-      // Don't store password in local storage in a real app
-      const userToStore = { id: foundUser.id, email: foundUser.email, role: foundUser.role, full_name: foundUser.full_name };
-      setUser(userToStore);
-      setSession({ access_token: 'mock_token' });
-      localStorage.setItem('nohn_user', JSON.stringify(userToStore));
-      return { success: true };
-    }
-    return { success: false, error: 'Invalid email or password' };
+  const handleLogin = (e) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMsg('');
+    setTimeout(() => {
+      // Mock login success
+      const user = MOCK_USER;
+      setSession(user);
+      localStorage.setItem('nohn_session', JSON.stringify(user));
+      setCurrentView('dashboard');
+      setIsLoading(false);
+    }, 800);
   };
 
   const handleLogout = () => {
-    setUser(null);
     setSession(null);
-    localStorage.removeItem('nohn_user');
+    localStorage.removeItem('nohn_session');
+    setCurrentView('login');
   };
 
-  const saveAudit = (newAudit) => {
-    const updatedAudits = [newAudit, ...audits];
-    setAudits(updatedAudits);
-    localStorage.setItem('nohn_audits', JSON.stringify(updatedAudits));
+  const startNewAudit = () => {
+    setCurrentAudit({
+      id: `AUD-${Math.floor(Math.random() * 10000)}`,
+      date: new Date().toISOString().split('T')[0],
+      status: 'In Progress',
+      responses: {},
+      notes: ''
+    });
+    setCurrentView('new');
   };
 
-  if (isLoading) {
-    return <div className="min-h-screen flex items-center justify-center bg-gray-50"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600"></div></div>;
-  }
+  const saveAudit = (auditData) => {
+    setAudits([auditData, ...audits]);
+    setCurrentAudit(null);
+    setCurrentView('saved');
+  };
 
-  if (!session) {
-    return <LoginPage onLogin={handleLogin} />;
+  if (currentView === 'login') {
+    return (
+      <LoginPage 
+        onLogin={handleLogin} 
+        isLoading={isLoading} 
+        errorMsg={errorMsg} 
+      />
+    );
   }
 
   return (
-    <div className="flex h-screen bg-gray-50 font-sans text-gray-900 overflow-hidden">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} onLogout={handleLogout} user={user} />
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <Header user={user} />
-        <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50 p-6">
-          {activeTab === 'dashboard' && <Dashboard audits={audits} setActiveTab={setActiveTab} />}
-          {activeTab === 'new-audit' && <NewAudit user={user} onSave={saveAudit} setActiveTab={setActiveTab} />}
-          {activeTab === 'saved-audits' && <SavedAudits audits={audits} />}
-          {activeTab === 'reports' && <Reports audits={audits} />}
-          {activeTab === 'settings' && <SettingsPage />}
-        </main>
-      </div>
+    <div className="flex h-screen bg-slate-50 text-slate-800 font-sans">
+      {/* Sidebar Navigation */}
+      <aside className="w-64 bg-slate-900 text-slate-300 flex flex-col transition-all duration-300 hidden md:flex">
+        <div className="p-6 border-b border-slate-800">
+          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
+            <ShieldAlert className="text-teal-500" size={24} />
+            NOHN 340B
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">Compliance Audit Tool</p>
+        </div>
+        
+        <nav className="flex-1 py-6 px-3 space-y-1">
+          <NavItem icon={LayoutDashboard} label="Dashboard" isActive={currentView === 'dashboard'} onClick={() => setCurrentView('dashboard')} />
+          <NavItem icon={Plus} label="New Audit" isActive={currentView === 'new'} onClick={startNewAudit} highlight />
+          <NavItem icon={FolderOpen} label="Saved Audits" isActive={currentView === 'saved'} onClick={() => setCurrentView('saved')} />
+          <NavItem icon={FileText} label="Reports" isActive={currentView === 'reports'} onClick={() => setCurrentView('reports')} />
+          <NavItem icon={Settings} label="Settings" isActive={currentView === 'settings'} onClick={() => setCurrentView('settings')} />
+        </nav>
+
+        <div className="p-4 border-t border-slate-800">
+          <div className="flex items-center gap-3 mb-4 px-2">
+            <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-white font-semibold">
+              {session?.full_name?.charAt(0) || 'U'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-white truncate">{session?.full_name}</p>
+              <p className="text-xs text-slate-400 truncate">Auditor</p>
+            </div>
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
+          >
+            <LogOut size={16} />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Mobile Header */}
+        <header className="md:hidden bg-slate-900 text-white p-4 flex justify-between items-center shadow-md">
+          <h1 className="font-bold flex items-center gap-2">
+             <ShieldAlert className="text-teal-500" size={20} />
+             NOHN 340B
+          </h1>
+          <button onClick={handleLogout} className="text-slate-300 hover:text-white"><LogOut size={20} /></button>
+        </header>
+
+        {/* Dynamic View Content */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8">
+          {currentView === 'dashboard' && <Dashboard audits={audits} onNewAudit={startNewAudit} />}
+          {currentView === 'new' && <AuditWorkflow currentAudit={currentAudit} onSave={saveAudit} onCancel={() => setCurrentView('dashboard')} />}
+          {currentView === 'saved' && <SavedAudits audits={audits} />}
+          {currentView === 'reports' && <ReportsView audits={audits} />}
+          {currentView === 'settings' && <SettingsView />}
+        </div>
+      </main>
     </div>
   );
-};
+}
 
-const LoginPage = ({ onLogin }) => {
+// ==========================================
+// COMPONENT: LOGIN PAGE
+// ==========================================
+function LoginPage({ onLogin, isLoading, errorMsg }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setIsSubmitting(true);
-    setError('');
-
-    // Simulate network delay
-    setTimeout(() => {
-      const result = onLogin(email, password);
-      if (!result.success) {
-        setError(result.error);
-      }
-      setIsSubmitting(false);
-    }, 600);
-  };
 
   return (
-    <div className="min-h-screen flex">
-      {/* Left side - Login Form */}
-      <div className="flex-1 flex flex-col justify-center py-12 px-4 sm:px-6 lg:flex-none lg:px-20 xl:px-24 bg-white z-10 shadow-2xl relative">
-        <div className="mx-auto w-full max-w-sm lg:w-96">
-          <div className="flex items-center gap-3 mb-8">
-            <div className="bg-teal-600 p-2 rounded-lg text-white">
-              <ShieldAlert size={28} />
+    <div className="min-h-screen relative flex items-center justify-center p-4">
+      {/* Background Image & Overlay */}
+      <div 
+        className="absolute inset-0 z-0 bg-cover bg-center"
+        style={{ backgroundImage: "url('https://images.squarespace-cdn.com/content/v1/68c866063634045746ac5740/f37d7dd0-43d2-4072-b78f-a4997e91c1fa/port-angeles-wharf-2-1200x800.jpg')" }}
+      >
+        <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-[2px]"></div>
+      </div>
+
+      {/* Login Card */}
+      <div className="relative z-10 w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl overflow-hidden border border-white/20">
+        <div className="p-8">
+          <div className="flex justify-center mb-6">
+            <div className="w-16 h-16 bg-teal-600 rounded-xl flex items-center justify-center shadow-lg shadow-teal-600/30">
+              <ShieldAlert size={32} className="text-white" />
             </div>
-            <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">NOHN 340B</h2>
           </div>
+          
+          <h2 className="text-2xl font-bold text-center text-slate-800 mb-2">NOHN Compliance</h2>
+          <p className="text-center text-slate-500 text-sm mb-8">Sign in to the 340B Audit Tool</p>
 
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">Sign in to your account</h2>
-            <p className="mt-2 text-sm text-gray-600">Secure audit compliance portal</p>
-          </div>
+          {errorMsg && (
+            <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg flex items-center gap-2">
+              <AlertTriangle size={16} />
+              {errorMsg}
+            </div>
+          )}
 
-          <div className="mt-8">
-            <form onSubmit={handleSubmit} className="space-y-6">
-              {error && (
-                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md flex items-start gap-3">
-                  <AlertCircle className="text-red-500 mt-0.5" size={18} />
-                  <p className="text-sm text-red-700">{error} (Mock: auditor@nohn.org / password)</p>
-                </div>
-              )}
-              
-              {/* --- MAKE SURE THESE TWO DIVS ARE IN YOUR CODE --- */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email address</label>
-                <input 
-                  type="email" 
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition-all bg-white" 
-                  placeholder="auditor@nohn.org"
-                  required 
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                <input 
-                  type="password" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition-all bg-white" 
-                  placeholder="password"
-                  required 
-                />
-              </div>
-              {/* ------------------------------------------------ */}
+          <form onSubmit={onLogin} className="space-y-5">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
+              <input 
+                type="email" 
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all"
+                placeholder="auditor@nohn.org"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+              <input 
+                type="password" 
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg border border-slate-300 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none transition-all"
+                placeholder="••••••••"
+              />
+            </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center">
-                  <input id="remember-me" name="remember-me" type="checkbox" className="h-4 w-4 text-teal-600 focus:ring-teal-500 border-gray-300 rounded" />
-                  <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900">Remember me</label>
-                </div>
-                <div className="text-sm">
-                  <a href="#" className="font-medium text-teal-600 hover:text-teal-500">Forgot password?</a>
-                </div>
-              </div>
+            <div className="flex items-center justify-between">
+              <label className="flex items-center text-sm text-slate-600">
+                <input type="checkbox" className="mr-2 rounded text-teal-600 focus:ring-teal-500" />
+                Remember me
+              </label>
+              <a href="#" className="text-sm font-medium text-teal-600 hover:text-teal-700">Forgot password?</a>
+            </div>
 
-              <button 
-                type="submit" 
-                disabled={isSubmitting}
-                className={`w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition-colors ${isSubmitting ? 'opacity-75 cursor-not-allowed' : ''}`}
-              >
-                {isSubmitting ? 'Signing in...' : 'Sign in'}
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-      
-      {/* Right side - Background Image */}
-      <div className="hidden lg:block relative w-0 flex-1 bg-gray-900">
-        <img 
-          className="absolute inset-0 h-full w-full object-cover opacity-60" 
-          src="https://images.squarespace-cdn.com/content/v1/68c866063634045746ac5740/f37d7dd0-43d2-4072-b78f-a4997e91c1fa/port-angeles-wharf-2-1200x800.jpg" 
-          alt="Port Angeles Wharf" 
-        />
-        <div className="absolute inset-0 bg-gradient-to-r from-gray-900/80 to-transparent mix-blend-multiply"></div>
-      </div>
-    </div>
-  );
-};
-
-const Sidebar = ({ activeTab, setActiveTab, onLogout, user }) => {
-  const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'new-audit', label: 'New Audit', icon: Plus },
-    { id: 'saved-audits', label: 'Saved Audits', icon: FolderOpen },
-    { id: 'reports', label: 'Reports', icon: FileText },
-    { id: 'settings', label: 'Settings', icon: Settings },
-  ];
-
-  return (
-    <div className="w-64 bg-white border-r border-gray-200 flex flex-col shadow-sm z-10">
-      <div className="h-16 flex items-center px-6 border-b border-gray-100">
-        <div className="flex items-center gap-2 text-teal-700">
-          <ShieldAlert size={24} />
-          <span className="text-xl font-bold tracking-tight">NOHN 340B</span>
-        </div>
-      </div>
-      
-      <div className="p-4 mb-2">
-         <button 
-            onClick={() => setActiveTab('new-audit')}
-            className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white py-2.5 px-4 rounded-lg shadow-sm transition-colors font-medium text-sm"
-          >
-            <Plus size={18} />
-            Start New Audit
-          </button>
-      </div>
-
-      <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeTab === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => setActiveTab(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors text-sm font-medium ${
-                isActive 
-                  ? 'bg-teal-50 text-teal-700' 
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
+            <button 
+              type="submit" 
+              disabled={isLoading}
+              className="w-full py-3 px-4 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-lg shadow-md transition-all flex items-center justify-center disabled:opacity-70"
             >
-              <Icon size={18} className={isActive ? 'text-teal-600' : 'text-gray-400'} />
-              {item.label}
+              {isLoading ? <Clock className="animate-spin" size={20} /> : 'Sign In'}
             </button>
-          );
-        })}
-      </nav>
-
-      <div className="p-4 border-t border-gray-100">
-        <div className="flex items-center gap-3 mb-4 px-2">
-          <div className="h-8 w-8 rounded-full bg-teal-100 flex items-center justify-center text-teal-700 font-bold text-sm">
-            {user?.full_name?.charAt(0) || 'U'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-gray-900 truncate">{user?.full_name}</p>
-            <p className="text-xs text-gray-500 truncate capitalize">{user?.role}</p>
-          </div>
+          </form>
         </div>
-        <button 
-          onClick={onLogout}
-          className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-        >
-          <LogOut size={18} />
-          Sign out
-        </button>
       </div>
     </div>
   );
-};
+}
 
-const Header = () => {
-  return (
-    <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shadow-sm z-0">
-      <h2 className="text-lg font-semibold text-gray-800">Compliance Audit Portal</h2>
-      <div className="flex items-center gap-4 text-sm text-gray-500 font-medium">
-        <div className="flex items-center gap-1">
-          <ShieldAlert size={16} className="text-green-500" />
-          <span>System Secure</span>
-        </div>
-        <div className="h-4 w-px bg-gray-300"></div>
-        <span>Do not enter PHI</span>
-      </div>
-    </header>
-  );
-};
-
-const Dashboard = ({ audits, setActiveTab }) => {
-  const passed = audits.filter(a => a.status === 'passed').length;
-  const failed = audits.filter(a => a.status === 'failed').length;
-  const total = audits.length;
-  const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+// ==========================================
+// COMPONENT: DASHBOARD
+// ==========================================
+function Dashboard({ audits, onNewAudit }) {
+  const stats = useMemo(() => {
+    const total = audits.length;
+    const passed = audits.filter(a => a.status === 'Passed').length;
+    const failed = audits.filter(a => a.status === 'Failed').length;
+    const review = audits.filter(a => a.status === 'Needs Review').length;
+    const passRate = total === 0 ? 0 : Math.round((passed / total) * 100);
+    return { total, passed, failed, review, passRate };
+  }, [audits]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
-      <div className="flex justify-between items-end">
+    <div className="max-w-6xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-500 mt-1">Overview of 340B compliance activity</p>
+          <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Dashboard</h2>
+          <p className="text-slate-500 mt-1">Overview of 340B compliance auditing.</p>
         </div>
         <button 
-          onClick={() => setActiveTab('new-audit')}
-          className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white py-2 px-4 rounded-lg shadow-sm transition-colors text-sm font-medium"
+          onClick={onNewAudit}
+          className="flex items-center gap-2 bg-teal-600 hover:bg-teal-700 text-white px-5 py-2.5 rounded-xl font-medium shadow-sm transition-all"
         >
-          <Plus size={16} /> New Audit
+          <Plus size={20} />
+          Start New Audit
         </button>
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col">
-          <div className="text-gray-500 text-sm font-medium mb-1 flex items-center gap-2">
-            <FileText size={16} /> Total Audits
-          </div>
-          <div className="text-3xl font-bold text-gray-900">{total}</div>
-        </div>
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col">
-          <div className="text-gray-500 text-sm font-medium mb-1 flex items-center gap-2">
-            <CheckCircle size={16} className="text-green-500"/> Passed
-          </div>
-          <div className="text-3xl font-bold text-gray-900">{passed}</div>
-        </div>
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col">
-          <div className="text-gray-500 text-sm font-medium mb-1 flex items-center gap-2">
-            <XCircle size={16} className="text-red-500"/> Failed
-          </div>
-          <div className="text-3xl font-bold text-gray-900">{failed}</div>
-        </div>
-        <div className="bg-white p-5 rounded-xl border border-gray-100 shadow-sm flex flex-col">
-          <div className="text-gray-500 text-sm font-medium mb-1 flex items-center gap-2">
-            <AlertCircle size={16} className="text-teal-500"/> Pass Rate
-          </div>
-          <div className="text-3xl font-bold text-gray-900">{passRate}%</div>
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <KpiCard title="Total Audits" value={stats.total} icon={FileText} color="bg-blue-50 text-blue-600" />
+        <KpiCard title="Passed" value={stats.passed} icon={CheckCircle} color="bg-green-50 text-green-600" />
+        <KpiCard title="Failed" value={stats.failed} icon={XCircle} color="bg-red-50 text-red-600" />
+        <KpiCard title="Pass Rate" value={`${stats.passRate}%`} icon={LayoutDashboard} color="bg-teal-50 text-teal-600" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Recent Activity */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-gray-100 shadow-sm">
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
-            <h3 className="font-semibold text-gray-800">Recent Audits</h3>
-            <button onClick={() => setActiveTab('saved-audits')} className="text-sm text-teal-600 hover:text-teal-700 font-medium">View all</button>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Chart Area */}
+        <div className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <h3 className="text-lg font-semibold text-slate-800 mb-6">Recent Audit Performance</h3>
+          
+          {/* Custom CSS Bar Chart */}
+          <div className="h-64 flex items-end justify-around gap-2 pb-6 border-b border-slate-100 relative">
+            {/* Grid lines */}
+            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20">
+              <div className="border-t border-slate-300 w-full"></div>
+              <div className="border-t border-slate-300 w-full"></div>
+              <div className="border-t border-slate-300 w-full"></div>
+              <div className="border-t border-slate-300 w-full"></div>
+            </div>
+            
+            {/* Mock Data Bars */}
+            {[
+              { label: 'Jan', pass: 80, fail: 10 },
+              { label: 'Feb', pass: 95, fail: 5 },
+              { label: 'Mar', pass: 70, fail: 20 },
+              { label: 'Apr', pass: 85, fail: 8 },
+              { label: 'May', pass: parseInt(stats.passRate) || 0, fail: 100 - (parseInt(stats.passRate) || 0) },
+            ].map((col, i) => (
+              <div key={i} className="flex flex-col items-center gap-2 group z-10 w-12">
+                <div className="w-full bg-slate-100 rounded-t-md h-full flex flex-col justify-end overflow-hidden">
+                  <div 
+                    style={{ height: `${col.fail}%` }} 
+                    className="w-full bg-red-400 hover:bg-red-500 transition-all rounded-t-sm"
+                    title={`Failed: ${col.fail}%`}
+                  ></div>
+                  <div 
+                    style={{ height: `${col.pass}%` }} 
+                    className="w-full bg-teal-500 hover:bg-teal-600 transition-all rounded-t-sm"
+                    title={`Passed: ${col.pass}%`}
+                  ></div>
+                </div>
+                <span className="text-xs font-medium text-slate-500">{col.label}</span>
+              </div>
+            ))}
           </div>
-          <div className="divide-y divide-gray-50">
+          <div className="flex justify-center gap-6 mt-4 text-sm text-slate-600">
+            <span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-teal-500"></div> Passed</span>
+            <span className="flex items-center gap-2"><div className="w-3 h-3 rounded-full bg-red-400"></div> Failed</span>
+          </div>
+        </div>
+
+        {/* Recent Activity List */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <h3 className="text-lg font-semibold text-slate-800 mb-4">Recent Activity</h3>
+          <div className="space-y-4">
             {audits.slice(0, 5).map(audit => (
-              <div key={audit.id} className="p-4 hover:bg-gray-50 transition-colors flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                  <div className={`p-2 rounded-full ${audit.status === 'passed' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
-                    {audit.status === 'passed' ? <CheckCircle size={20} /> : <XCircle size={20} />}
-                  </div>
-                  <div>
-                    <p className="font-medium text-sm text-gray-900">{audit.id} <span className="text-gray-400 font-normal">({audit.internal_ref || 'No Ref'})</span></p>
-                    <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
-                      <Clock size={12} /> {new Date(audit.date_created).toLocaleDateString()} by {audit.auditor_name}
-                    </p>
-                  </div>
+              <div key={audit.id} className="flex items-center gap-4 p-3 hover:bg-slate-50 rounded-xl transition-colors">
+                <StatusIcon status={audit.status} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-900 truncate">Audit {audit.id}</p>
+                  <p className="text-xs text-slate-500">{audit.date}</p>
                 </div>
                 <StatusBadge status={audit.status} />
               </div>
             ))}
-            {audits.length === 0 && (
-              <div className="p-8 text-center text-gray-500 text-sm">No audits found. Start one to see data here.</div>
-            )}
-          </div>
-        </div>
-
-        {/* Quick Actions / Info */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-          <h3 className="font-semibold text-gray-800 mb-4">Important Reminders</h3>
-          <div className="space-y-4">
-            <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg flex gap-3 text-sm text-blue-800">
-              <ShieldAlert className="shrink-0 text-blue-600" size={20} />
-              <p><strong>No PHI:</strong> Remember not to enter Patient Names, DOBs, or MRNs into any audit notes.</p>
-            </div>
-            <div className="bg-amber-50 border border-amber-100 p-4 rounded-lg flex gap-3 text-sm text-amber-800">
-              <AlertTriangle className="shrink-0 text-amber-600" size={20} />
-              <p>Critical failures immediately mark an audit as Failed regardless of other answers.</p>
-            </div>
+            {audits.length === 0 && <p className="text-sm text-slate-500 text-center py-4">No recent audits.</p>}
           </div>
         </div>
       </div>
     </div>
   );
-};
+}
 
-const NewAudit = ({ user, onSave, setActiveTab }) => {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [internalRef, setInternalRef] = useState('');
+// ==========================================
+// COMPONENT: AUDIT WORKFLOW (Stepper)
+// ==========================================
+// Define the logic and questions
+const AUDIT_QUESTIONS = [
+  {
+    id: 'q1',
+    text: 'Is the patient an established NOHN patient?',
+    helpText: 'Patient must have an established record prior to the date of the prescription.',
+    criticalFail: true,
+  },
+  {
+    id: 'q2',
+    text: 'Was the patient seen by a NOHN provider or eligible referral provider?',
+    helpText: 'Check the encounter notes matching the Rx date.',
+    criticalFail: true,
+  },
+  {
+    id: 'q3',
+    text: 'Is there a valid referral?',
+    helpText: 'Required if seen by an outside provider.',
+    criticalFail: false,
+    conditional: true // Simplified logic
+  },
+  {
+    id: 'q4',
+    text: 'Is the drug eligible for 340B capture?',
+    helpText: 'Verify against carve-out list and medicaid status.',
+    criticalFail: true,
+  },
+  {
+    id: 'q5',
+    text: 'Was the prescription filled at an eligible contract pharmacy?',
+    helpText: 'Match NPI/Location with current active contract list.',
+    criticalFail: true,
+  }
+];
+
+function AuditWorkflow({ currentAudit, onSave, onCancel }) {
+  const [step, setStep] = useState(0);
   const [responses, setResponses] = useState({});
-  const [questionNotes, setQuestionNotes] = useState({});
-  const [generalNotes, setGeneralNotes] = useState('');
-  const [isFinished, setIsFinished] = useState(false);
+  const [notes, setNotes] = useState({});
+  const [globalNote, setGlobalNote] = useState('');
+  const [isCriticalFailure, setIsCriticalFailure] = useState(false);
 
-  // Filter questions based on conditional logic
-  const visibleQuestions = AUDIT_QUESTIONS.filter(q => {
-    if (!q.dependsOn) return true;
-    return responses[q.dependsOn] === q.expectedValue;
-  });
+  const currentQ = AUDIT_QUESTIONS[step];
+  const isLastStep = step === AUDIT_QUESTIONS.length - 1;
 
-  const handleAnswer = (questionId, answer) => {
-    setResponses(prev => ({ ...prev, [questionId]: answer }));
-    // Move to next step automatically if it's a Yes/No and not the last question
-    if (currentStep < visibleQuestions.length - 1) {
-       setTimeout(() => setCurrentStep(prev => prev + 1), 300);
+  const handleAnswer = (answer) => {
+    setResponses(prev => ({ ...prev, [currentQ.id]: answer }));
+    
+    // Logic check
+    if (answer === 'No' && currentQ.criticalFail) {
+      setIsCriticalFailure(true);
+    }
+    
+    if (answer === 'Yes' && isCriticalFailure && currentQ.criticalFail) {
+      // Re-evaluate if they changed their mind
+      const otherFails = AUDIT_QUESTIONS.some(q => q.id !== currentQ.id && responses[q.id] === 'No' && q.criticalFail);
+      if (!otherFails) setIsCriticalFailure(false);
+    }
+
+    // Auto-advance after short delay if not last step
+    if (!isLastStep) {
+      setTimeout(() => setStep(s => s + 1), 300);
     }
   };
 
-  const handleNote = (questionId, note) => {
-    setQuestionNotes(prev => ({ ...prev, [questionId]: note }));
-  };
+  const handleComplete = () => {
+    // Calculate final status
+    const failedCount = Object.values(responses).filter(r => r === 'No').length;
+    let finalStatus = 'Passed';
+    if (isCriticalFailure) finalStatus = 'Failed';
+    else if (failedCount > 0 || Object.keys(responses).length < AUDIT_QUESTIONS.length) finalStatus = 'Needs Review';
 
-  const calculateResult = () => {
-    let failedCount = 0;
-    let isCriticalFailure = false;
-
-    visibleQuestions.forEach(q => {
-      if (responses[q.id] === 'no') {
-        failedCount++;
-        if (q.critical) isCriticalFailure = true;
-      }
-    });
-
-    const status = isCriticalFailure || failedCount > 0 ? 'failed' : 'passed';
-    return { status, failedCount };
-  };
-
-  const handleSave = () => {
-    const { status, failedCount } = calculateResult();
-    const newAudit = {
-      id: `A-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`,
-      internal_ref: internalRef,
-      date_created: new Date().toISOString(),
-      completed_at: new Date().toISOString(),
-      auditor_id: user?.id,
-      auditor_name: user?.full_name,
-      status,
-      notes: generalNotes,
+    const completedAudit = {
+      ...currentAudit,
       responses,
-      questionNotes,
-      failed_checks: failedCount
+      questionNotes: notes,
+      notes: globalNote,
+      status: finalStatus,
+      failed_checks: failedCount,
+      completed_at: new Date().toISOString()
     };
-    
-    onSave(newAudit);
-    setActiveTab('saved-audits');
+    onSave(completedAudit);
   };
-
-  if (isFinished) {
-    const result = calculateResult();
-    return (
-      <div className="max-w-2xl mx-auto mt-10">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8 text-center">
-          <div className={`mx-auto w-20 h-20 rounded-full flex items-center justify-center mb-6 ${result.status === 'passed' ? 'bg-green-100' : 'bg-red-100'}`}>
-            {result.status === 'passed' ? <CheckCircle size={40} className="text-green-600" /> : <XCircle size={40} className="text-red-600" />}
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Audit Complete</h2>
-          <p className="text-gray-500 mb-6">Based on your responses, this audit has <strong className={result.status === 'passed' ? 'text-green-600' : 'text-red-600'}>{result.status}</strong>.</p>
-          
-          <div className="text-left mb-8 bg-gray-50 p-4 rounded-lg">
-             <label className="block text-sm font-medium text-gray-700 mb-2">General Audit Notes (Optional - NO PHI)</label>
-             <textarea 
-               value={generalNotes}
-               onChange={(e) => setGeneralNotes(e.target.value)}
-               className="w-full border-gray-300 rounded-md shadow-sm p-3 focus:ring-teal-500 focus:border-teal-500 text-sm"
-               rows="3"
-               placeholder="Add any final remarks here..."
-             ></textarea>
-          </div>
-
-          <div className="flex gap-4 justify-center">
-            <button onClick={() => setIsFinished(false)} className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors">
-              Review Answers
-            </button>
-            <button onClick={handleSave} className="px-6 py-2 bg-teal-600 rounded-lg text-white font-medium hover:bg-teal-700 transition-colors flex items-center gap-2 shadow-sm">
-              <Save size={18} /> Save Audit
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const currentQ = visibleQuestions[currentStep];
-  const progress = Math.round((Object.keys(responses).length / visibleQuestions.length) * 100);
 
   return (
-    <div className="max-w-3xl mx-auto flex flex-col h-full">
-      <div className="mb-6 flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">New Audit</h1>
-          <p className="text-sm text-gray-500 mt-1">Step {currentStep + 1} of {visibleQuestions.length}</p>
-        </div>
-        <div className="w-1/3 bg-gray-200 rounded-full h-2.5">
-          <div className="bg-teal-600 h-2.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }}></div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-6">
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-1">Internal Reference / Encounter ID (NO PHI)</label>
-          <input 
-            type="text" 
-            value={internalRef}
-            onChange={(e) => setInternalRef(e.target.value)}
-            className="w-full md:w-1/2 border-gray-300 rounded-md shadow-sm p-2.5 text-sm focus:ring-teal-500 focus:border-teal-500 border"
-            placeholder="e.g. RX-12345"
-          />
-        </div>
-
-        <div className="border-t border-gray-100 pt-8 pb-4 min-h-[300px]">
-          {currentQ && (
-            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-               {currentQ.critical && (
-                  <span className="inline-block bg-amber-100 text-amber-800 text-xs font-semibold px-2.5 py-0.5 rounded-full mb-4">
-                    Critical Check
-                  </span>
-               )}
-              <h2 className="text-xl font-medium text-gray-900 mb-8">{currentQ.text}</h2>
-              
-              <div className="flex gap-4 mb-8">
-                <button 
-                  onClick={() => handleAnswer(currentQ.id, 'yes')}
-                  className={`flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-all ${
-                    responses[currentQ.id] === 'yes' 
-                    ? 'border-green-500 bg-green-50 text-green-700 shadow-sm' 
-                    : 'border-gray-200 hover:border-green-200 hover:bg-green-50/50 text-gray-600'
-                  }`}
-                >
-                  Yes
-                </button>
-                <button 
-                  onClick={() => handleAnswer(currentQ.id, 'no')}
-                  className={`flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-all ${
-                    responses[currentQ.id] === 'no' 
-                    ? 'border-red-500 bg-red-50 text-red-700 shadow-sm' 
-                    : 'border-gray-200 hover:border-red-200 hover:bg-red-50/50 text-gray-600'
-                  }`}
-                >
-                  No
-                </button>
-                <button 
-                  onClick={() => handleAnswer(currentQ.id, 'na')}
-                  className={`flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-all ${
-                    responses[currentQ.id] === 'na' 
-                    ? 'border-gray-400 bg-gray-100 text-gray-800 shadow-sm' 
-                    : 'border-gray-200 hover:bg-gray-50 text-gray-600'
-                  }`}
-                >
-                  N/A
-                </button>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-500 mb-2 flex items-center gap-2">
-                   <Edit3 size={14}/> Notes for this question (Optional)
-                </label>
-                <input 
-                  type="text" 
-                  value={questionNotes[currentQ.id] || ''}
-                  onChange={(e) => handleNote(currentQ.id, e.target.value)}
-                  className="w-full border-gray-300 rounded-md shadow-sm p-2.5 text-sm focus:ring-teal-500 focus:border-teal-500 border bg-gray-50"
-                  placeholder="Add context..."
-                />
-              </div>
+    <div className="max-w-3xl mx-auto pb-20">
+      {/* Workflow Header */}
+      <div className="mb-8">
+        <button onClick={onCancel} className="text-slate-500 hover:text-slate-800 flex items-center gap-1 text-sm font-medium mb-4 transition-colors">
+          <ChevronLeft size={16} /> Back to Dashboard
+        </button>
+        <div className="flex justify-between items-end">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">Conduct Audit</h2>
+            <p className="text-slate-500">Ref: {currentAudit?.id}</p>
+          </div>
+          {isCriticalFailure && (
+            <div className="bg-red-100 text-red-800 px-4 py-2 rounded-lg font-semibold flex items-center gap-2 animate-in fade-in zoom-in duration-300">
+              <AlertTriangle size={18} /> Critical Failure Detected
             </div>
           )}
         </div>
       </div>
 
-      <div className="flex justify-between mt-auto">
-        <button 
-          onClick={() => setCurrentStep(prev => Math.max(0, prev - 1))}
-          disabled={currentStep === 0}
-          className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 font-medium hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-        >
-          <ChevronLeft size={16} /> Previous
-        </button>
-        
-        {currentStep === visibleQuestions.length - 1 ? (
-           <button 
-            onClick={() => setIsFinished(true)}
-            disabled={!responses[currentQ?.id]}
-            className="px-6 py-2 bg-teal-600 rounded-lg text-white font-medium hover:bg-teal-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-          >
-            Review & Complete
-          </button>
-        ) : (
-          <button 
-            onClick={() => setCurrentStep(prev => Math.min(visibleQuestions.length - 1, prev + 1))}
-            disabled={!responses[currentQ?.id]}
-            className="px-4 py-2 bg-gray-800 rounded-lg text-white font-medium hover:bg-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-          >
-            Next <ChevronRight size={16} />
-          </button>
-        )}
+      {/* Progress Bar */}
+      <div className="bg-slate-200 h-2 rounded-full mb-8 overflow-hidden">
+        <div 
+          className={`h-full transition-all duration-500 ${isCriticalFailure ? 'bg-red-500' : 'bg-teal-500'}`}
+          style={{ width: `${((step + 1) / AUDIT_QUESTIONS.length) * 100}%` }}
+        ></div>
       </div>
+
+      {/* PHI Warning */}
+      <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-8 flex items-start gap-3">
+        <AlertTriangle className="text-yellow-600 mt-0.5 shrink-0" size={20} />
+        <div>
+          <h4 className="text-sm font-semibold text-yellow-800">PHI Restriction Warning</h4>
+          <p className="text-xs text-yellow-700 mt-1">
+            Do NOT enter Patient Names, DOBs, MRNs, or Rx Numbers in the notes. Use internal audit reference IDs only.
+          </p>
+        </div>
+      </div>
+
+      {/* Question Card */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 mb-6 relative overflow-hidden">
+        {/* Step indicator */}
+        <div className="text-xs font-bold text-teal-600 uppercase tracking-wider mb-4">
+          Question {step + 1} of {AUDIT_QUESTIONS.length}
+        </div>
+        
+        <h3 className="text-xl font-medium text-slate-800 mb-2">{currentQ.text}</h3>
+        {currentQ.helpText && (
+          <p className="text-sm text-slate-500 mb-8 italic">{currentQ.helpText}</p>
+        )}
+
+        <div className="flex flex-col sm:flex-row gap-4 mb-8">
+          <button
+            onClick={() => handleAnswer('Yes')}
+            className={`flex-1 py-4 px-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2
+              ${responses[currentQ.id] === 'Yes' 
+                ? 'bg-green-50 border-green-500 text-green-700' 
+                : 'border-slate-200 text-slate-600 hover:border-green-200 hover:bg-green-50/50'}`}
+          >
+            <CheckCircle size={24} className={responses[currentQ.id] === 'Yes' ? 'text-green-600' : 'text-slate-400'} />
+            Yes
+          </button>
+          
+          <button
+            onClick={() => handleAnswer('No')}
+            className={`flex-1 py-4 px-6 rounded-xl border-2 font-semibold text-lg transition-all flex items-center justify-center gap-2
+              ${responses[currentQ.id] === 'No' 
+                ? 'bg-red-50 border-red-500 text-red-700' 
+                : 'border-slate-200 text-slate-600 hover:border-red-200 hover:bg-red-50/50'}`}
+          >
+            <XCircle size={24} className={responses[currentQ.id] === 'No' ? 'text-red-600' : 'text-slate-400'} />
+            No
+          </button>
+          
+          <button
+            onClick={() => handleAnswer('N/A')}
+            className={`flex-1 py-4 px-6 rounded-xl border-2 font-semibold text-lg transition-all
+              ${responses[currentQ.id] === 'N/A' 
+                ? 'bg-slate-100 border-slate-400 text-slate-700' 
+                : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50'}`}
+          >
+            N/A
+          </button>
+        </div>
+
+        {/* Question specific notes */}
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Notes (Optional)</label>
+          <textarea 
+            value={notes[currentQ.id] || ''}
+            onChange={(e) => setNotes({...notes, [currentQ.id]: e.target.value})}
+            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none text-sm resize-none"
+            rows="2"
+            placeholder="Add context to your answer..."
+          ></textarea>
+        </div>
+      </div>
+
+      {/* Global Notes & Final Action (Only on last step) */}
+      {isLastStep && (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 mb-6 animate-in fade-in slide-in-from-bottom-4">
+          <h3 className="text-lg font-medium text-slate-800 mb-4">Final Audit Notes</h3>
+          <textarea 
+            value={globalNote}
+            onChange={(e) => setGlobalNote(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none text-sm mb-6 resize-none"
+            rows="4"
+            placeholder="Overall observations or compliance concerns..."
+          ></textarea>
+          
+          <button 
+            onClick={handleComplete}
+            disabled={Object.keys(responses).length === 0}
+            className="w-full py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <Save size={20} />
+            Complete & Save Audit
+          </button>
+        </div>
+      )}
+
+      {/* Navigation Controls */}
+      {!isLastStep && (
+        <div className="flex justify-between items-center">
+          <button 
+            onClick={() => setStep(s => Math.max(0, s - 1))}
+            disabled={step === 0}
+            className="px-6 py-3 rounded-xl font-medium text-slate-600 hover:bg-slate-200 disabled:opacity-30 transition-colors"
+          >
+            Previous
+          </button>
+          <button 
+            onClick={() => setStep(s => Math.min(AUDIT_QUESTIONS.length - 1, s + 1))}
+            className="px-6 py-3 bg-slate-200 hover:bg-slate-300 rounded-xl font-medium text-slate-800 transition-colors flex items-center gap-2"
+          >
+            Next <ChevronRight size={18} />
+          </button>
+        </div>
+      )}
     </div>
   );
-};
+}
 
-const SavedAudits = ({ audits }) => {
-  const [expandedId, setExpandedId] = useState(null);
-
-  const toggleExpand = (id) => {
-    setExpandedId(prev => prev === id ? null : id);
-  };
-
+// ==========================================
+// COMPONENT: SAVED AUDITS
+// ==========================================
+function SavedAudits({ audits }) {
   return (
     <div className="max-w-6xl mx-auto">
-       <div className="flex justify-between items-center mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Saved Audits</h1>
-        <div className="flex gap-2">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+        <div>
+          <h2 className="text-3xl font-bold text-slate-900">Saved Audits</h2>
+          <p className="text-slate-500 mt-1">Review and manage past compliance checks.</p>
+        </div>
+        <div className="flex gap-3">
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-            <input type="text" placeholder="Search ID or Ref..." className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-teal-500 focus:border-teal-500 shadow-sm" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+            <input 
+              type="text" 
+              placeholder="Search audits..." 
+              className="pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 w-full md:w-64"
+            />
           </div>
-          <button className="px-3 py-2 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 flex items-center gap-2 shadow-sm">
-            <Filter size={16} /> Filter
+          <button className="p-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50">
+            <Filter size={18} />
           </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm text-gray-600">
-            <thead className="bg-gray-50 text-gray-700 font-medium border-b border-gray-200">
-              <tr>
-                <th className="px-6 py-4">Audit ID</th>
-                <th className="px-6 py-4">Ref / Enc</th>
-                <th className="px-6 py-4">Date</th>
-                <th className="px-6 py-4">Auditor</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+          <table className="w-full text-left border-collapse whitespace-nowrap">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase text-slate-500 tracking-wider">
+                <th className="p-4 font-medium">Audit ID</th>
+                <th className="p-4 font-medium">Date</th>
+                <th className="p-4 font-medium">Auditor</th>
+                <th className="p-4 font-medium">Status</th>
+                <th className="p-4 font-medium text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-slate-100">
               {audits.map((audit) => (
-                <React.Fragment key={audit.id}>
-                  <tr className={`hover:bg-gray-50 transition-colors ${expandedId === audit.id ? 'bg-gray-50' : ''}`}>
-                    <td className="px-6 py-4 font-medium text-gray-900">{audit.id}</td>
-                    <td className="px-6 py-4">{audit.internal_ref || '-'}</td>
-                    <td className="px-6 py-4">{new Date(audit.date_created).toLocaleDateString()}</td>
-                    <td className="px-6 py-4">{audit.auditor_name}</td>
-                    <td className="px-6 py-4"><StatusBadge status={audit.status} /></td>
-                    <td className="px-6 py-4 text-right">
-                      <button onClick={() => toggleExpand(audit.id)} className="text-teal-600 hover:text-teal-800 font-medium mr-3">
-                        {expandedId === audit.id ? 'Close' : 'View'}
-                      </button>
-                    </td>
-                  </tr>
-                  {/* Expanded Detail View */}
-                  {expandedId === audit.id && (
-                    <tr>
-                      <td colSpan="6" className="p-0 border-b-2 border-teal-100">
-                        <div className="bg-teal-50/30 p-6 flex flex-col gap-4 animate-in slide-in-from-top-2 duration-200">
-                          <div className="flex justify-between items-start">
-                             <div>
-                               <h4 className="font-semibold text-gray-900">Audit Details</h4>
-                               <p className="text-xs text-gray-500 mt-1">Completed {new Date(audit.completed_at).toLocaleString()}</p>
-                             </div>
-                             <div className="flex gap-2">
-                               <button className="px-3 py-1.5 bg-white border border-gray-200 rounded text-xs font-medium text-gray-700 hover:bg-gray-50 shadow-sm flex items-center gap-1"><Copy size={14}/> Duplicate</button>
-                               <button className="px-3 py-1.5 bg-white border border-gray-200 rounded text-xs font-medium text-gray-700 hover:bg-gray-50 shadow-sm flex items-center gap-1"><Download size={14}/> PDF</button>
-                             </div>
-                          </div>
-                          
-                          {audit.notes && (
-                            <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-                              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1 block">General Notes</span>
-                              <p className="text-sm text-gray-800">{audit.notes}</p>
-                            </div>
-                          )}
-
-                          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-                            <div className="px-4 py-2 border-b border-gray-100 bg-gray-50/50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                              Question Responses
-                            </div>
-                            <ul className="divide-y divide-gray-100">
-                              {Object.entries(audit.responses).map(([qId, answer]) => {
-                                const q = AUDIT_QUESTIONS.find(ques => ques.id === qId);
-                                if (!q) return null;
-                                return (
-                                  <li key={qId} className="px-4 py-3 flex justify-between gap-4">
-                                    <div className="text-sm text-gray-700 flex-1">{q.text}</div>
-                                    <div className="flex items-center gap-4">
-                                       {audit.questionNotes?.[qId] && (
-                                         <span className="text-xs text-gray-500 italic flex items-center gap-1"><Edit3 size={12}/> Note attached</span>
-                                       )}
-                                       <span className={`text-xs font-bold uppercase px-2 py-1 rounded ${
-                                        answer === 'yes' ? 'bg-green-100 text-green-700' : 
-                                        answer === 'no' ? 'bg-red-100 text-red-700' : 
-                                        'bg-gray-200 text-gray-700'
-                                      }`}>
-                                        {answer}
-                                      </span>
-                                    </div>
-                                  </li>
-                                )
-                              })}
-                            </ul>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
+                <tr key={audit.id} className="hover:bg-slate-50/50 transition-colors group">
+                  <td className="p-4 font-medium text-slate-900">{audit.id}</td>
+                  <td className="p-4 text-sm text-slate-600">{audit.date}</td>
+                  <td className="p-4 text-sm text-slate-600 flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-xs font-bold">
+                      {audit.auditor?.charAt(0) || 'S'}
+                    </div>
+                    {audit.auditor || 'System'}
+                  </td>
+                  <td className="p-4"><StatusBadge status={audit.status} /></td>
+                  <td className="p-4 text-right">
+                    <div className="flex justify-end gap-2 opacity-100 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button className="p-1.5 text-slate-400 hover:text-teal-600 rounded-md hover:bg-teal-50 transition-colors" title="View"><Eye size={18}/></button>
+                      <button className="p-1.5 text-slate-400 hover:text-blue-600 rounded-md hover:bg-blue-50 transition-colors" title="Export PDF"><Download size={18}/></button>
+                    </div>
+                  </td>
+                </tr>
               ))}
               {audits.length === 0 && (
-                <tr>
-                  <td colSpan="6" className="px-6 py-8 text-center text-gray-500">No saved audits found.</td>
-                </tr>
+                <tr><td colSpan="5" className="p-8 text-center text-slate-500">No saved audits found.</td></tr>
               )}
             </tbody>
           </table>
@@ -748,100 +647,94 @@ const SavedAudits = ({ audits }) => {
       </div>
     </div>
   );
-};
+}
 
-const Reports = ({ audits }) => {
+// ==========================================
+// PLACEHOLDER COMPONENTS (Reports, Settings)
+// ==========================================
+function ReportsView() {
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Reports & Export</h1>
-          <p className="text-gray-500 mt-1">Generate CSV/Excel reports for compliance review.</p>
-        </div>
-        <button className="px-4 py-2 bg-teal-600 rounded-lg text-white font-medium hover:bg-teal-700 transition-colors shadow-sm flex items-center gap-2">
-          <Download size={18} /> Export Full Report (.csv)
-        </button>
+    <div className="max-w-4xl mx-auto text-center py-20">
+      <div className="w-20 h-20 bg-teal-50 text-teal-600 rounded-2xl flex items-center justify-center mx-auto mb-6">
+        <Download size={40} />
       </div>
+      <h2 className="text-2xl font-bold text-slate-900 mb-2">Export & Reports</h2>
+      <p className="text-slate-500 mb-8 max-w-md mx-auto">Generate CSV or Excel summaries of your compliance audits for external review.</p>
+      <button className="bg-slate-900 text-white px-6 py-3 rounded-xl font-medium hover:bg-slate-800 transition-colors inline-flex items-center gap-2">
+        <Download size={20} /> Download Full Report (CSV)
+      </button>
+    </div>
+  );
+}
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-        <h3 className="font-semibold text-gray-800 mb-4">Export Filters</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-           <div>
-             <label className="block text-sm font-medium text-gray-700 mb-1">Date Range</label>
-             <select className="w-full border-gray-300 rounded-md shadow-sm p-2 text-sm border focus:ring-teal-500 focus:border-teal-500">
-               <option>Last 30 Days</option>
-               <option>This Quarter</option>
-               <option>Year to Date</option>
-               <option>Custom Range...</option>
-             </select>
-           </div>
-           <div>
-             <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-             <select className="w-full border-gray-300 rounded-md shadow-sm p-2 text-sm border focus:ring-teal-500 focus:border-teal-500">
-               <option>All Statuses</option>
-               <option>Passed</option>
-               <option>Failed</option>
-             </select>
-           </div>
-           <div>
-             <label className="block text-sm font-medium text-gray-700 mb-1">Auditor</label>
-             <select className="w-full border-gray-300 rounded-md shadow-sm p-2 text-sm border focus:ring-teal-500 focus:border-teal-500">
-               <option>All Auditors</option>
-               <option>Jane Auditor</option>
-               <option>Admin User</option>
-             </select>
-           </div>
-        </div>
-      </div>
-      
-      <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg flex gap-3 text-sm text-blue-800">
-         <AlertCircle className="shrink-0 text-blue-600" size={20} />
-         <p><strong>Note:</strong> Exports do not contain PHI as no PHI is collected by this tool. Internal Reference IDs are included to cross-reference with the EMR.</p>
+function SettingsView() {
+  return (
+    <div className="max-w-3xl mx-auto">
+      <h2 className="text-2xl font-bold text-slate-900 mb-6">Settings</h2>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 mb-6">
+        <h3 className="font-semibold text-slate-800 mb-4 border-b pb-2">Audit Configuration</h3>
+        <p className="text-sm text-slate-500 mb-4">Only administrators can edit the question logic.</p>
+        <button className="px-4 py-2 border border-slate-300 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors">Edit Question Bank</button>
       </div>
     </div>
   );
-};
+}
 
-const SettingsPage = () => {
+// ==========================================
+// UI UTILITIES
+// ==========================================
+function NavItem({ icon: Icon, label, isActive, onClick, highlight }) {
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Settings</h1>
-      
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-        <div className="px-6 py-4 border-b border-gray-100 bg-gray-50/50">
-          <h3 className="font-semibold text-gray-800">Audit Questions Configuration</h3>
-        </div>
-        <div className="p-6">
-          <p className="text-sm text-gray-500 mb-4">Manage the questions presented during a new audit. (Admin only)</p>
-          <div className="space-y-3">
-            {AUDIT_QUESTIONS.slice(0,3).map(q => (
-              <div key={q.id} className="flex items-start justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{q.text}</p>
-                  <p className="text-xs text-gray-500 mt-1">ID: {q.id} | {q.critical ? 'Critical Check' : 'Standard'}</p>
-                </div>
-                <button className="text-gray-400 hover:text-teal-600"><Edit3 size={16}/></button>
-              </div>
-            ))}
-            <div className="text-center p-3 text-sm text-gray-500 italic">... {AUDIT_QUESTIONS.length - 3} more questions</div>
-          </div>
-          <button className="mt-4 px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-            <Plus size={16}/> Add Question
-          </button>
-        </div>
+    <button 
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+        highlight 
+          ? 'bg-teal-600 text-white shadow-md hover:bg-teal-500 mt-4 mb-2' 
+          : isActive 
+            ? 'bg-slate-800 text-white' 
+            : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+      }`}
+    >
+      <Icon size={18} />
+      {label}
+    </button>
+  );
+}
+
+function KpiCard({ title, value, icon: Icon, color }) {
+  return (
+    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex items-center gap-4">
+      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${color}`}>
+        <Icon size={24} />
+      </div>
+      <div>
+        <p className="text-sm font-medium text-slate-500">{title}</p>
+        <p className="text-2xl font-bold text-slate-900">{value}</p>
       </div>
     </div>
   );
-};
+}
 
-const StatusBadge = ({ status }) => {
-  if (status === 'passed') {
-    return <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200"><CheckCircle size={12}/> Passed</span>;
-  }
-  if (status === 'failed') {
-    return <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800 border border-red-200"><XCircle size={12}/> Failed</span>;
-  }
-  return <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800 border border-gray-200">Pending</span>;
-};
+function StatusBadge({ status }) {
+  const styles = {
+    'Passed': 'bg-green-100 text-green-800 border-green-200',
+    'Failed': 'bg-red-100 text-red-800 border-red-200',
+    'Needs Review': 'bg-yellow-100 text-yellow-800 border-yellow-200',
+    'In Progress': 'bg-slate-100 text-slate-800 border-slate-200',
+  }[status] || 'bg-slate-100 text-slate-800 border-slate-200';
 
-export default App;
+  return (
+    <span className={`px-2.5 py-1 text-xs font-semibold rounded-full border ${styles}`}>
+      {status}
+    </span>
+  );
+}
+
+function StatusIcon({ status }) {
+  switch(status) {
+    case 'Passed': return <CheckCircle className="text-green-500" size={20} />;
+    case 'Failed': return <XCircle className="text-red-500" size={20} />;
+    case 'Needs Review': return <AlertTriangle className="text-yellow-500" size={20} />;
+    default: return <Clock className="text-slate-400" size={20} />;
+  }
+}
