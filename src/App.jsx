@@ -170,14 +170,15 @@ const LoginPage = ({ onLogin }) => {
                 </div>
               )}
               
+              {/* --- MAKE SURE THESE TWO DIVS ARE IN YOUR CODE --- */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Email address</label>
                 <input 
                   type="email" 
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all" 
-                  placeholder="Enter your email"
+                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition-all bg-white" 
+                  placeholder="auditor@nohn.org"
                   required 
                 />
               </div>
@@ -188,11 +189,12 @@ const LoginPage = ({ onLogin }) => {
                   type="password" 
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all" 
-                  placeholder="Enter your password"
+                  className="appearance-none block w-full px-4 py-3 border border-gray-300 rounded-lg shadow-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-600 focus:border-transparent transition-all bg-white" 
+                  placeholder="password"
                   required 
                 />
               </div>
+              {/* ------------------------------------------------ */}
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center">
